@@ -1,5 +1,5 @@
 import { geocode, reverseGeocode, suggest, type IGeocodeResponse, type IReverseGeocodeResponse, type ISuggestResponse } from '@esri/arcgis-rest-geocoding';
-import { ArcGISIdentityManager, type ILocation, type IPoint } from '@esri/arcgis-rest-request';
+import { ApiKeyManager, type ILocation, type IPoint } from '@esri/arcgis-rest-request';
 
 const arcgisAccessToken =
 	import.meta.env.VITE_ARCGIS_ACCESS_TOKEN?.trim() ??
@@ -7,9 +7,7 @@ const arcgisAccessToken =
 	'';
 
 const authentication = arcgisAccessToken
-	? ArcGISIdentityManager.fromToken({
-			token: arcgisAccessToken
-		})
+	? ApiKeyManager.fromKey(arcgisAccessToken)
 	: undefined;
 
 type Suggestion = ISuggestResponse['suggestions'][number];

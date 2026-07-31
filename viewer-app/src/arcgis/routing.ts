@@ -1,5 +1,5 @@
 import { solveRoute, type ISolveRouteResponse } from '@esri/arcgis-rest-routing';
-import { ArcGISIdentityManager, type IFeatureSet, type ILocation, type IPoint } from '@esri/arcgis-rest-request';
+import { ApiKeyManager, type IFeatureSet, type ILocation, type IPoint } from '@esri/arcgis-rest-request';
 
 const arcgisAccessToken =
 	import.meta.env.VITE_ARCGIS_ACCESS_TOKEN?.trim() ??
@@ -7,9 +7,7 @@ const arcgisAccessToken =
 	'';
 
 const authentication = arcgisAccessToken
-	? ArcGISIdentityManager.fromToken({
-			token: arcgisAccessToken
-		})
+	? ApiKeyManager.fromKey(arcgisAccessToken)
 	: undefined;
 
 type RouteStop = IPoint | ILocation | [number, number] | [number, number, number];

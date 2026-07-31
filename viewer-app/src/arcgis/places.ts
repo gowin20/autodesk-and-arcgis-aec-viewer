@@ -1,5 +1,5 @@
 import { findPlacesWithinExtent, getPlaceDetails, type IFindPlacesWithinExtentResponse } from '@esri/arcgis-rest-places';
-import { ArcGISIdentityManager } from '@esri/arcgis-rest-request';
+import { ApiKeyManager } from '@esri/arcgis-rest-request';
 import type { Map as MaplibreMap } from 'maplibre-gl';
 
 const arcgisAccessToken =
@@ -8,9 +8,7 @@ const arcgisAccessToken =
 	'';
 
 const authentication = arcgisAccessToken
-	? ArcGISIdentityManager.fromToken({
-			token: arcgisAccessToken
-		})
+	? ApiKeyManager.fromKey(arcgisAccessToken)
 	: undefined;
 
 type PlaceQueryObject = {
