@@ -1,5 +1,6 @@
 import adapter from '@sveltejs/adapter-auto';
 import { sveltekit } from '@sveltejs/kit/vite';
+import { viteStaticCopy } from 'vite-plugin-static-copy';
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({

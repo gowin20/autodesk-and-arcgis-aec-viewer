@@ -18,7 +18,8 @@
 		"svelte": "^5.56.1",
 		"svelte-check": "^4.6.0",
 		"typescript": "^6.0.3",
-		"vite": "^8.0.16"
+		"vite": "^8.0.16",
+		"vite-plugin-static-copy": "^3.1.4"
 	},
 	"dependencies": {
 		"@esri/arcgis-rest-geocoding": "^4.10.3",

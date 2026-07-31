@@ -5,7 +5,7 @@
 	import ViewerControls from './ViewerControls.svelte';
 
 	let leftCollapsed = $state(false);
-	let rightCollapsed = $state(false);
+	let rightCollapsed = $state(true);
 </script>
 
 <calcite-shell>

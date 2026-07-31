@@ -1,6 +1,14 @@
 <script lang="ts">
+	import { browser } from '$app/environment';
+	import { base } from '$app/paths';
+	import { setAssetPath } from '@esri/calcite-components';
 	import favicon from '$lib/assets/favicon.svg';
 	import '../app.css';
+
+	if (browser) {
+		setAssetPath(`${base}/calcite/`);
+	}
+
 	import '@esri/calcite-components/components/calcite-action/customElement';
 	import '@esri/calcite-components/components/calcite-action-bar/customElement';
 	import '@esri/calcite-components/components/calcite-block/customElement';
