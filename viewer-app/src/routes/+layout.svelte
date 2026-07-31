@@ -1,0 +1,32 @@
+<script lang="ts">
+	import favicon from '$lib/assets/favicon.svg';
+	import '../app.css';
+	import '@esri/calcite-components/components/calcite-action/customElement';
+	import '@esri/calcite-components/components/calcite-action-bar/customElement';
+	import '@esri/calcite-components/components/calcite-block/customElement';
+	import '@esri/calcite-components/components/calcite-button/customElement';
+	import '@esri/calcite-components/components/calcite-combobox/customElement';
+	import '@esri/calcite-components/components/calcite-combobox-item/customElement';
+	import '@esri/calcite-components/components/calcite-combobox-item-group/customElement';
+	import '@esri/calcite-components/components/calcite-dropdown/customElement';
+	import '@esri/calcite-components/components/calcite-dropdown-group/customElement';
+	import '@esri/calcite-components/components/calcite-dropdown-item/customElement';
+	import '@esri/calcite-components/components/calcite-label/customElement';
+	import '@esri/calcite-components/components/calcite-navigation/customElement';
+	import '@esri/calcite-components/components/calcite-navigation-logo/customElement';
+	import '@esri/calcite-components/components/calcite-notice/customElement';
+	import '@esri/calcite-components/components/calcite-panel/customElement';
+	import '@esri/calcite-components/components/calcite-segmented-control/customElement';
+	import '@esri/calcite-components/components/calcite-segmented-control-item/customElement';
+	import '@esri/calcite-components/components/calcite-shell/customElement';
+	import '@esri/calcite-components/components/calcite-shell-panel/customElement';
+	import '@esri/calcite-components/components/calcite-switch/customElement';
+
+	let { children } = $props();
+</script>
+
+<svelte:head>
+	<link rel="icon" href={favicon} />
+</svelte:head>
+
+{@render children()}

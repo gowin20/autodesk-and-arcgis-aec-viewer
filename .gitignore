@@ -1,0 +1,24 @@
+viewer-app/node_modules
+
+# Output
+viewer-app/.output
+viewer-app/.vercel
+viewer-app/.netlify
+viewer-app/.wrangler
+viewer-app/.svelte-kit
+viewer-app/build
+viewer-app/.vscode
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+viewer-app/.env
+viewer-app/.env.*
+!viewer-app/.env.example
+!viewer-app/.env.test
+
+# Vite
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
