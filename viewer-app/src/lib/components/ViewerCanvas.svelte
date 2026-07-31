@@ -3,6 +3,7 @@
 	import type { ErrorEvent, GeoJSONSourceSpecification, Map as MaplibreMap } from 'maplibre-gl';
 	import { DEFAULT_BASEMAP_STYLE, selectedBasemapStyle } from '$lib/state/basemap-style';
 	import { CONTEXTUAL_LAYER_OPTIONS, selectedContextualLayerIds } from '$lib/state/contextual-layers';
+	import { elevationQueryEnabled, serviceAreaEnabled } from '$lib/state/location-services';
 	import 'maplibre-gl/dist/maplibre-gl.css';
 
 	const arcgisToken =
@@ -55,6 +56,8 @@
 				});
 				let activeStyleId = DEFAULT_BASEMAP_STYLE;
 				let activeContextualLayerIds: string[] = [];
+				let isServiceAreaEnabled = false;
+				let isElevationQueryEnabled = false;
 				const contextualFeatureLayers = new Map<
 					string,
 					Awaited<ReturnType<typeof FeatureLayer.fromUrl>>
@@ -62,6 +65,7 @@
 				const contextualLayerConfigById = new Map(
 					CONTEXTUAL_LAYER_OPTIONS.map((layer) => [layer.id, layer] as const)
 				);
+				let activeServiceAreaPopup: InstanceType<typeof maplibregl.Popup> | undefined;
 
 				const unsubscribeSelectedBasemapStyle = selectedBasemapStyle.subscribe((styleId) => {
 					if (styleId === activeStyleId) {
@@ -133,6 +137,20 @@
 					activeContextualLayerIds = layerIds;
 					syncContextualLayerVisibility();
 				});
+				const unsubscribeServiceAreaEnabled = serviceAreaEnabled.subscribe((enabled) => {
+					isServiceAreaEnabled = enabled;
+					if (!enabled && !isElevationQueryEnabled) {
+						activeServiceAreaPopup?.remove();
+						activeServiceAreaPopup = undefined;
+					}
+				});
+				const unsubscribeElevationQueryEnabled = elevationQueryEnabled.subscribe((enabled) => {
+					isElevationQueryEnabled = enabled;
+					if (!enabled && !isServiceAreaEnabled) {
+						activeServiceAreaPopup?.remove();
+						activeServiceAreaPopup = undefined;
+					}
+				});
 
 				for (const contextualLayer of CONTEXTUAL_LAYER_OPTIONS) {
 					const featureLayer = await FeatureLayer.fromUrl(contextualLayer.url, {
@@ -141,6 +159,29 @@
 					contextualFeatureLayers.set(contextualLayer.id, featureLayer);
 				}
 				syncContextualLayerVisibility();
+				map.on('click', (event) => {
+					if (!isServiceAreaEnabled && !isElevationQueryEnabled) {
+						return;
+					}
+
+					activeServiceAreaPopup?.remove();
+					const popupContent = document.createElement('div');
+					const coordinatesHtml = `
+						<calcite-block open heading="Coordinates">
+							<p>Longitude: ${event.lngLat.lng.toFixed(5)}</p>
+							<p>Latitude: ${event.lngLat.lat.toFixed(5)}</p>
+						</calcite-block>
+					`;
+					popupContent.innerHTML = `
+						${isServiceAreaEnabled ? `<calcite-panel heading="Service area" description="Clicked location">${coordinatesHtml}</calcite-panel>` : ''}
+						${isElevationQueryEnabled ? `<calcite-panel heading="Elevation query" description="Clicked location">${coordinatesHtml}</calcite-panel>` : ''}
+					`;
+
+					activeServiceAreaPopup = new maplibregl.Popup({ closeOnClick: false })
+						.setLngLat(event.lngLat)
+						.setDOMContent(popupContent)
+						.addTo(map);
+				});
 
 				basemapStyle.on('BasemapStyleError', (error) => {
 					mapError = getErrorMessage(error);
@@ -156,6 +197,8 @@
 				map.on('remove', () => {
 					unsubscribeSelectedBasemapStyle();
 					unsubscribeSelectedContextualLayerIds();
+					unsubscribeServiceAreaEnabled();
+					unsubscribeElevationQueryEnabled();
 				});
 			} catch (error) {
 				mapError = getErrorMessage(error);

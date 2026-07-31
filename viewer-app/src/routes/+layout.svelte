@@ -19,6 +19,7 @@
 	import '@esri/calcite-components/components/calcite-dropdown/customElement';
 	import '@esri/calcite-components/components/calcite-dropdown-group/customElement';
 	import '@esri/calcite-components/components/calcite-dropdown-item/customElement';
+	import '@esri/calcite-components/components/calcite-input/customElement';
 	import '@esri/calcite-components/components/calcite-label/customElement';
 	import '@esri/calcite-components/components/calcite-navigation/customElement';
 	import '@esri/calcite-components/components/calcite-navigation-logo/customElement';

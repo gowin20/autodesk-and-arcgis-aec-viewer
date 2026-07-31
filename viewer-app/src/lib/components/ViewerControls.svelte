@@ -5,6 +5,11 @@
 		CONTEXTUAL_LAYER_OPTIONS,
 		selectedContextualLayerIds
 	} from '$lib/state/contextual-layers';
+	import {
+		elevationQueryEnabled,
+		geocodingQuery,
+		serviceAreaEnabled
+	} from '$lib/state/location-services';
 	import type { BasemapStyleObject } from '@esri/maplibre-arcgis';
 
 	type BasemapOption = {
@@ -22,6 +27,9 @@
 	let basemapLoadError = $state<string | null>(null);
 	let selectedStyleId = $state(DEFAULT_BASEMAP_STYLE);
 	let selectedLayerIds = $state<string[]>([]);
+	let isServiceAreaEnabled = $state(false);
+	let isElevationQueryEnabled = $state(false);
+	let geocodingSearchQuery = $state('');
 	let contextualLayerCombobox:
 		| (HTMLElement & {
 				selectedItems?: Array<{ value?: string }>;
@@ -52,6 +60,15 @@
 		const unsubscribeSelectedContextualLayerIds = selectedContextualLayerIds.subscribe((layerIds) => {
 			selectedLayerIds = layerIds;
 		});
+		const unsubscribeServiceAreaEnabled = serviceAreaEnabled.subscribe((enabled) => {
+			isServiceAreaEnabled = enabled;
+		});
+		const unsubscribeElevationQueryEnabled = elevationQueryEnabled.subscribe((enabled) => {
+			isElevationQueryEnabled = enabled;
+		});
+		const unsubscribeGeocodingQuery = geocodingQuery.subscribe((query) => {
+			geocodingSearchQuery = query;
+		});
 
 		void (async () => {
 			if (!arcgisToken) {
@@ -79,6 +96,9 @@
 		return () => {
 			unsubscribeSelectedBasemapStyle();
 			unsubscribeSelectedContextualLayerIds();
+			unsubscribeServiceAreaEnabled();
+			unsubscribeElevationQueryEnabled();
+			unsubscribeGeocodingQuery();
 		};
 	});
 
@@ -88,6 +108,16 @@
 				?.map((item) => item.value)
 				.filter((value): value is string => Boolean(value)) ?? [];
 		selectedContextualLayerIds.set(nextSelection);
+	};
+	const toggleServiceArea = () => {
+		serviceAreaEnabled.set(!isServiceAreaEnabled);
+	};
+	const toggleElevationQuery = () => {
+		elevationQueryEnabled.set(!isElevationQueryEnabled);
+	};
+	const onGeocodingInput = (event: Event) => {
+		const target = event.target as { value?: string } | null;
+		geocodingQuery.set(target?.value ?? '');
 	};
 </script>
 
@@ -157,6 +187,50 @@
 					</calcite-combobox-item-group>
 				{/each}
 			</calcite-combobox>
+		</calcite-label>
+		<calcite-label>
+			Building layers
+			<calcite-combobox
+				label="Building layers"
+				selection-mode="multiple"
+				selection-display="all"
+				selection-appearance="icon"
+				scale="m"
+				placeholder="Select building layers"
+			>
+			</calcite-combobox>
+		</calcite-label>
+	</calcite-block>
+
+	<calcite-block heading="Location services" description="Search and analysis" open>
+		<calcite-label>
+			Service area
+			<calcite-button
+				width="full"
+				appearance={isServiceAreaEnabled ? 'solid' : 'outline'}
+				onclick={toggleServiceArea}
+			>
+				Service area {isServiceAreaEnabled ? 'On' : 'Off'}
+			</calcite-button>
+		</calcite-label>
+		<calcite-label>
+			Elevation query
+			<calcite-button
+				width="full"
+				appearance={isElevationQueryEnabled ? 'solid' : 'outline'}
+				onclick={toggleElevationQuery}
+			>
+				Elevation query {isElevationQueryEnabled ? 'On' : 'Off'}
+			</calcite-button>
+		</calcite-label>
+
+		<calcite-label>
+			Geocoding
+			<calcite-input
+				value={geocodingSearchQuery}
+				placeholder="Search by address or place"
+				oncalciteInputInput={onGeocodingInput}
+			></calcite-input>
 		</calcite-label>
 	</calcite-block>
 </calcite-panel>
