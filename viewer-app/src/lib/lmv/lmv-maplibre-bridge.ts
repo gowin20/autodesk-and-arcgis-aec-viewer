@@ -247,6 +247,7 @@ export function createLmvBridge({
 		viewer.setGhosting(false);
 		viewer.setGroundShadow(false);
 		viewer.setLightPreset(1);
+		viewer.setTheme('light-theme');
 		viewer.impl.renderer().setAOEnabled(false);
 	}
 
