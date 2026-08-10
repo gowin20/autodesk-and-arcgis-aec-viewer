@@ -8,6 +8,17 @@ export default defineConfig({
 		noExternal: ['@esri/calcite-components', '@esri/maplibre-arcgis', 'maplibre-gl']
 	},
 
+	server: {
+		// APS sample-server proxy used by the LMV bridge (auth token + model catalog).
+		proxy: {
+			'/api': {
+				target: 'https://aps-extensions.autodesk.io',
+				changeOrigin: true,
+				secure: true
+			}
+		}
+	},
+
 	// Calcite v5 publishes browser-ready ESM, so Vite handles module resolution,
 	// CSS extraction, CommonJS interop, and minification without Rollup plugins.
 	plugins: [

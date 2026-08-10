@@ -25,3 +25,28 @@ select,
 textarea {
 	font: inherit;
 }
+
+/* ── LMV (APS Viewer) overlay ────────────────────────────────
+   The LMV viewer lives in a hidden container layered over the map.
+   Its own canvas is display:none (it renders into MapLibre's shared
+   WebGL context); only GUI chrome (context menus, docking panels)
+   is visible and interactive. */
+.lmv-hidden {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	z-index: 1;
+}
+
+.lmv-hidden .adsk-viewing-viewer {
+	background: transparent !important;
+}
+
+.lmv-hidden .adsk-viewing-viewer > canvas {
+	display: none !important;
+}
+
+.lmv-hidden .adsk-control,
+.lmv-hidden .docking-panel {
+	pointer-events: auto;
+}
