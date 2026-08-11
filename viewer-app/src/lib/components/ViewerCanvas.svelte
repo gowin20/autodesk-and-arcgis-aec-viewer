@@ -9,13 +9,27 @@
 	import { getElevationAtLocation } from '$lib/arcgis/elevation';
 	import { fetchServiceArea, type ServiceAreaParameters } from '$lib/arcgis/routing';
 	import { DEFAULT_BASEMAP_STYLE, selectedBasemapStyle } from '$lib/state/basemap-style';
-	import { CONTEXTUAL_LAYER_OPTIONS, selectedContextualLayerIds } from '$lib/state/contextual-layers';
+	import { CONTEXTUAL_LAYER_OPTIONS } from '$lib/state/contextual-layers';
 	import {
+		addElevationResultViewerLayer,
+		projectLayersVisible,
+		type ElevationResultViewerLayer,
+		type GeocodeResultViewerLayer,
+		type SiteLocationViewerLayer,
+		upsertGeocodeResultViewerLayer,
+		upsertServiceAreaViewerLayer,
+		viewerLayers,
+		type ServiceAreaViewerLayer,
+		type ViewerLayer
+	} from '$lib/state/layers';
+	import {
+		enabledTravelModes,
 		elevationQueryEnabled,
 		mapCenter,
+		routePlannerLocations,
+		routePlannerRouteGeoJson,
 		selectedSearchLocation,
-		serviceAreaEnabled,
-		serviceAreaTravelMode
+		serviceAreaEnabled
 	} from '$lib/state/location-services';
 	import { createLmvBridge, createMercatorModelPlacement } from '$lib/lmv/lmv-maplibre-bridge';
 	import 'maplibre-gl/dist/maplibre-gl.css';
@@ -39,8 +53,6 @@
 
 	const getErrorMessage = (error: unknown): string =>
 		error instanceof Error ? error.message : 'Map failed to load.';
-	const getServiceAreaTravelModeLabel = (travelMode: ServiceAreaParameters['travelMode']): string =>
-		travelMode === 'walking' ? 'Walking' : 'Driving';
 
 	onMount(() => {
 		if (!mapContainer) {
@@ -67,7 +79,6 @@
 					attributionControl: false,
 					canvasContextAttributes: { antialias: true }
 				});
-				new maplibregl.Marker({ draggable: false }).setLngLat(MODEL_ORIGIN).addTo(map);
 
 				// ── LMV (APS Viewer) bridge: render Office.rvt into this map ──
 				// MapLibre owns the camera/frame loop; LMV renders into the shared
@@ -126,11 +137,17 @@
 						})
 					: undefined;
 				let activeStyleId = DEFAULT_BASEMAP_STYLE;
-				let activeContextualLayerIds: string[] = [];
+				let activeViewerLayers: ViewerLayer[] = [];
+				let isProjectLayersVisible = true;
 				let isServiceAreaEnabled = false;
-				let activeServiceAreaTravelMode: ServiceAreaParameters['travelMode'] = 'driving';
+				let activeEnabledTravelModes = {
+					driving: undefined,
+					walking: undefined
+				} as {
+					driving?: ServiceAreaParameters['travelMode'];
+					walking?: ServiceAreaParameters['travelMode'];
+				};
 				let isElevationQueryEnabled = false;
-				let latestServiceAreaData: GeoJSONSourceSpecification['data'] | undefined;
 				const contextualFeatureLayers = new Map<
 					string,
 					Awaited<ReturnType<typeof FeatureLayer.fromUrl>>
@@ -139,12 +156,79 @@
 					CONTEXTUAL_LAYER_OPTIONS.map((layer) => [layer.id, layer] as const)
 				);
 				let activeServiceAreaPopup: InstanceType<typeof maplibregl.Popup> | undefined;
-				let searchResultMarker: InstanceType<typeof maplibregl.Marker> | undefined;
+				const markerLayers = new Map<string, InstanceType<typeof maplibregl.Marker>>();
+				const routePlannerMarkers = new Map<string, InstanceType<typeof maplibregl.Marker>>();
 				const SERVICE_AREA_SOURCE_ID = 'service-area-result';
 				const SERVICE_AREA_FILL_LAYER_ID = 'service-area-fill';
 				const SERVICE_AREA_OUTLINE_LAYER_ID = 'service-area-outline';
+				const ROUTE_PLANNER_SOURCE_ID = 'route-planner-result';
+				const ROUTE_PLANNER_LINE_LAYER_ID = 'route-planner-line';
+				const ELEVATION_COLOR_MIN_FEET = 741;
+				const ELEVATION_COLOR_MID_FEET = 780;
+				const ELEVATION_COLOR_MAX_FEET = 1500;
+				const isServiceAreaLayer = (layer: ViewerLayer): layer is ServiceAreaViewerLayer =>
+					layer.kind === 'service-area';
+				const isSiteLocationLayer = (layer: ViewerLayer): layer is SiteLocationViewerLayer =>
+					layer.kind === 'site-location';
+				const isGeocodeResultLayer = (layer: ViewerLayer): layer is GeocodeResultViewerLayer =>
+					layer.kind === 'geocode-result';
+				const isElevationResultLayer = (layer: ViewerLayer): layer is ElevationResultViewerLayer =>
+					layer.kind === 'elevation-result';
+				const getContextualLayerEntry = (layerId: string) =>
+					activeViewerLayers.find(
+						(layer) => layer.kind === 'contextual' && layer.contextualLayerId === layerId
+					);
+				let activeRoutePlannerLocations: Array<{
+					id: string;
+					order: number;
+					longitude: number;
+					latitude: number;
+					label: string;
+				}> = [];
+				let activeRoutePlannerGeoJson: Record<string, unknown> | null = null;
+				const clamp = (value: number, min: number, max: number) =>
+					Math.min(Math.max(value, min), max);
+				const getElevationColorRatio = (elevationFeet: number): number => {
+					if (!Number.isFinite(elevationFeet)) {
+						return 0;
+					}
+					const range = ELEVATION_COLOR_MAX_FEET - ELEVATION_COLOR_MIN_FEET;
+					return clamp((elevationFeet - ELEVATION_COLOR_MIN_FEET) / range, 0, 1);
+				};
+				const interpolate = (start: number, end: number, ratio: number): number =>
+					Math.round(start + (end - start) * ratio);
+				const getElevationMarkerColor = (elevationFeet: number): string => {
+					if (!Number.isFinite(elevationFeet)) {
+						return 'rgb(0, 180, 170)';
+					}
+					// 3-stop gradient: cyan (741) -> green (780) -> red (1500)
+					if (elevationFeet <= ELEVATION_COLOR_MID_FEET) {
+						const lowerRange = ELEVATION_COLOR_MID_FEET - ELEVATION_COLOR_MIN_FEET;
+						const lowerRatio =
+							lowerRange > 0
+								? clamp((elevationFeet - ELEVATION_COLOR_MIN_FEET) / lowerRange, 0, 1)
+								: 1;
+						const red = interpolate(0, 46, lowerRatio);
+						const green = interpolate(180, 160, lowerRatio);
+						const blue = interpolate(170, 67, lowerRatio);
+						return `rgb(${red}, ${green}, ${blue})`;
+					}
 
-				const renderServiceArea = (data: GeoJSONSourceSpecification['data']) => {
+					const upperRange = ELEVATION_COLOR_MAX_FEET - ELEVATION_COLOR_MID_FEET;
+					const upperRatio =
+						upperRange > 0
+							? clamp((elevationFeet - ELEVATION_COLOR_MID_FEET) / upperRange, 0, 1)
+							: 1;
+					const red = interpolate(46, 220, upperRatio);
+					const green = interpolate(160, 38, upperRatio);
+					const blue = interpolate(67, 38, upperRatio);
+					return `rgb(${red}, ${green}, ${blue})`;
+				};
+
+				const renderServiceArea = (
+					data: GeoJSONSourceSpecification['data'],
+					visible: boolean
+				) => {
 					if (!map?.isStyleLoaded()) return;
 
 					const existingSource = map.getSource(SERVICE_AREA_SOURCE_ID) as GeoJSONSource | undefined;
@@ -175,6 +259,170 @@
 							}
 						});
 					}
+					map.setLayoutProperty(
+						SERVICE_AREA_FILL_LAYER_ID,
+						'visibility',
+						visible ? 'visible' : 'none'
+					);
+					map.setLayoutProperty(
+						SERVICE_AREA_OUTLINE_LAYER_ID,
+						'visibility',
+						visible ? 'visible' : 'none'
+					);
+				};
+
+				const removeServiceAreaRender = () => {
+					if (!map?.isStyleLoaded()) return;
+					if (map.getLayer(SERVICE_AREA_FILL_LAYER_ID)) {
+						map.removeLayer(SERVICE_AREA_FILL_LAYER_ID);
+					}
+					if (map.getLayer(SERVICE_AREA_OUTLINE_LAYER_ID)) {
+						map.removeLayer(SERVICE_AREA_OUTLINE_LAYER_ID);
+					}
+					if (map.getSource(SERVICE_AREA_SOURCE_ID)) {
+						map.removeSource(SERVICE_AREA_SOURCE_ID);
+					}
+				};
+				const renderRoutePlannerLine = (data: GeoJSONSourceSpecification['data']) => {
+					if (!map?.isStyleLoaded()) return;
+					const existingSource = map.getSource(ROUTE_PLANNER_SOURCE_ID) as GeoJSONSource | undefined;
+					if (existingSource) {
+						existingSource.setData(data);
+					} else {
+						map.addSource(ROUTE_PLANNER_SOURCE_ID, { type: 'geojson', data });
+					}
+
+					if (!map.getLayer(ROUTE_PLANNER_LINE_LAYER_ID)) {
+						map.addLayer({
+							id: ROUTE_PLANNER_LINE_LAYER_ID,
+							type: 'line',
+							source: ROUTE_PLANNER_SOURCE_ID,
+							paint: {
+								'line-color': '#f97316',
+								'line-width': 4
+							}
+						});
+					}
+				};
+				const removeRoutePlannerLine = () => {
+					if (!map?.isStyleLoaded()) return;
+					if (map.getLayer(ROUTE_PLANNER_LINE_LAYER_ID)) {
+						map.removeLayer(ROUTE_PLANNER_LINE_LAYER_ID);
+					}
+					if (map.getSource(ROUTE_PLANNER_SOURCE_ID)) {
+						map.removeSource(ROUTE_PLANNER_SOURCE_ID);
+					}
+				};
+				const syncRoutePlannerRender = () => {
+					if (!map) return;
+					const activeIds = new Set(activeRoutePlannerLocations.map((location) => location.id));
+					for (const [locationId, marker] of routePlannerMarkers.entries()) {
+						if (!activeIds.has(locationId)) {
+							marker.remove();
+							routePlannerMarkers.delete(locationId);
+						}
+					}
+
+					for (const location of activeRoutePlannerLocations) {
+						let marker = routePlannerMarkers.get(location.id);
+						if (!marker) {
+							const markerElement = document.createElement('div');
+							markerElement.className = 'route-stop-marker';
+							markerElement.textContent = String(location.order);
+							marker = new maplibregl.Marker({
+								element: markerElement,
+								anchor: 'center'
+							})
+								.setLngLat([location.longitude, location.latitude])
+								.setPopup(new maplibregl.Popup().setText(location.label))
+								.addTo(map);
+							routePlannerMarkers.set(location.id, marker);
+						} else {
+							marker.setLngLat([location.longitude, location.latitude]);
+						}
+						const element = marker.getElement();
+						element.textContent = String(location.order);
+					}
+
+					if (activeRoutePlannerGeoJson) {
+						renderRoutePlannerLine(activeRoutePlannerGeoJson as GeoJSONSourceSpecification['data']);
+					} else {
+						removeRoutePlannerLine();
+					}
+				};
+				const syncMarkerViewerLayers = () => {
+					if (!map) return;
+
+					const markerLayerEntries = activeViewerLayers.filter(
+						(layer) =>
+							layer.kind === 'site-location' ||
+							layer.kind === 'geocode-result' ||
+							layer.kind === 'elevation-result'
+					);
+					const activeMarkerLayerIds = new Set(markerLayerEntries.map((layer) => layer.id));
+
+					for (const [layerId, marker] of markerLayers.entries()) {
+						if (!activeMarkerLayerIds.has(layerId)) {
+							marker.remove();
+							markerLayers.delete(layerId);
+						}
+					}
+
+					for (const layer of markerLayerEntries) {
+						const isVisible = isProjectLayersVisible && layer.visible;
+						let marker = markerLayers.get(layer.id);
+
+						if (!marker) {
+							if (isSiteLocationLayer(layer)) {
+								marker = new maplibregl.Marker({ draggable: false })
+									.setLngLat([layer.longitude, layer.latitude])
+									.setPopup(new maplibregl.Popup().setText('Site location'))
+									.addTo(map);
+							} else if (isGeocodeResultLayer(layer)) {
+								marker = new maplibregl.Marker({ color: '#007ac2' })
+									.setLngLat([layer.longitude, layer.latitude])
+									.setPopup(new maplibregl.Popup().setText(layer.locationLabel))
+									.addTo(map);
+							} else if (isElevationResultLayer(layer)) {
+								const elevationColor = getElevationMarkerColor(layer.elevationFeet);
+								const elevationColorRatio = getElevationColorRatio(layer.elevationFeet);
+								console.log('[Elevation marker] Creating marker', {
+									layerId: layer.id,
+									elevationMeters: layer.elevationMeters,
+									elevationFeet: layer.elevationFeet,
+									normalizedRatio: elevationColorRatio,
+									derivedColor: elevationColor
+								});
+								marker = new maplibregl.Marker({
+									color: elevationColor
+								})
+									.setLngLat([layer.longitude, layer.latitude])
+									.setPopup(
+										new maplibregl.Popup().setHTML(
+											`<strong>${layer.label}</strong><br/>${layer.elevationMeters.toLocaleString(undefined, {
+												maximumFractionDigits: 1
+											})} m (${layer.elevationFeet.toLocaleString(undefined, {
+												maximumFractionDigits: 0
+											})} ft)<br/>Longitude: ${layer.longitude.toFixed(5)}<br/>Latitude: ${layer.latitude.toFixed(5)}`
+										)
+									)
+									.addTo(map);
+							}
+							if (marker) {
+								markerLayers.set(layer.id, marker);
+							}
+						} else {
+							marker.setLngLat([layer.longitude, layer.latitude]);
+							if (isGeocodeResultLayer(layer)) {
+								marker.setPopup(new maplibregl.Popup().setText(layer.locationLabel));
+							}
+						}
+
+						const markerElement = marker?.getElement();
+						if (markerElement) {
+							markerElement.style.display = isVisible ? '' : 'none';
+						}
+					}
 				};
 
 				const openElevationResult = async (longitude: number, latitude: number) => {
@@ -193,7 +441,10 @@
 
 					try {
 						const response = await getElevationAtLocation(longitude, latitude);
-						const elevationMeters = response.result.point.z;
+						const elevationMeters = Number(response.result.point.z);
+						if (!Number.isFinite(elevationMeters)) {
+							throw new Error('Elevation service returned an invalid elevation value.');
+						}
 						const elevationFeet = elevationMeters * 3.28084;
 						popupContent.innerHTML = `
 							<calcite-panel heading="Elevation" description="ArcGIS Elevation service">
@@ -201,9 +452,29 @@
 									<p>${elevationFeet.toLocaleString(undefined, { maximumFractionDigits: 0 })} ft above mean sea level</p>
 									<p>Longitude: ${longitude.toFixed(5)}</p>
 									<p>Latitude: ${latitude.toFixed(5)}</p>
+									<calcite-button id="elevation-add-layer" width="full">Add layer</calcite-button>
+									<p id="elevation-add-layer-status" role="status"></p>
 								</calcite-block>
 							</calcite-panel>
 						`;
+						const addLayerButton = popupContent.querySelector('#elevation-add-layer') as
+							| (HTMLElement & { disabled: boolean })
+							| null;
+						const addLayerStatus = popupContent.querySelector('#elevation-add-layer-status');
+						addLayerButton?.addEventListener('click', () => {
+							addElevationResultViewerLayer({
+								longitude,
+								latitude,
+								elevationMeters,
+								elevationFeet
+							});
+							if (addLayerStatus) {
+								addLayerStatus.textContent = 'Elevation layer added.';
+							}
+							if (addLayerButton) {
+								addLayerButton.disabled = true;
+							}
+						});
 					} catch (error: unknown) {
 						const message = getErrorMessage(error);
 						popupContent.innerHTML = `
@@ -223,7 +494,6 @@
 					popupContent.className = 'service-area-popup';
 					popupContent.innerHTML = `
 						<calcite-panel heading="Service area" description="Configure network analysis">
-							<p>Travel mode: ${getServiceAreaTravelModeLabel(activeServiceAreaTravelMode)}</p>
 							<calcite-label>
 								Break value <span id="service-area-break-units">(minutes)</span>
 								<calcite-input id="service-area-break" type="number" min="1" step="1" value="5"></calcite-input>
@@ -234,6 +504,25 @@
 									<calcite-option value="time" selected>Travel time (minutes)</calcite-option>
 									<calcite-option value="distance">Travel distance (kilometers)</calcite-option>
 								</calcite-select>
+							</calcite-label>
+							<calcite-label>
+								Travel mode
+								<calcite-segmented-control id="service-area-travel-mode" width="full">
+									<calcite-segmented-control-item value="driving" ${
+										activeEnabledTravelModes.driving ? 'checked' : 'disabled'
+									}>
+										Driving
+									</calcite-segmented-control-item>
+									<calcite-segmented-control-item value="walking" ${
+										activeEnabledTravelModes.walking && !activeEnabledTravelModes.driving
+											? 'checked'
+											: activeEnabledTravelModes.walking
+												? ''
+												: 'disabled'
+									}>
+										Walking
+									</calcite-segmented-control-item>
+								</calcite-segmented-control>
 							</calcite-label>
 							<calcite-label>
 								Travel direction
@@ -262,6 +551,9 @@
 					const impedanceSelect = popupContent.querySelector('#service-area-impedance') as
 						| (HTMLElement & { value: ServiceAreaParameters['impedance'] })
 						| null;
+					const travelModeControl = popupContent.querySelector('#service-area-travel-mode') as
+						| (HTMLElement & { value: 'driving' | 'walking' })
+						| null;
 					const directionSelect = popupContent.querySelector('#service-area-direction') as
 						| (HTMLElement & { value: ServiceAreaParameters['travelDirection'] })
 						| null;
@@ -271,6 +563,11 @@
 					const status = popupContent.querySelector('#service-area-status');
 					const getBreakUnitsLabel = () =>
 						impedanceSelect?.value === 'distance' ? 'kilometers' : 'minutes';
+					const getSelectedTravelMode = (): ServiceAreaParameters['travelMode'] | undefined => {
+						const selectedTravelModeKey =
+							travelModeControl?.value === 'walking' ? 'walking' : 'driving';
+						return activeEnabledTravelModes[selectedTravelModeKey];
+					};
 					const syncBreakUnitsLabel = () => {
 						if (!breakUnits) return;
 						breakUnits.textContent = `(${getBreakUnitsLabel()})`;
@@ -283,6 +580,16 @@
 
 						const breakValue = Number(breakInput.value);
 						const breakUnitsLabel = getBreakUnitsLabel();
+						const selectedTravelMode = getSelectedTravelMode();
+						if (!selectedTravelMode) {
+							status.textContent =
+								'The selected travel mode is unavailable. Check enabled travel modes.';
+							return;
+						}
+						const selectedTravelModeLabel =
+							typeof selectedTravelMode.name === 'string'
+								? selectedTravelMode.name
+								: 'Selected travel mode';
 						runButton.loading = true;
 						runButton.disabled = true;
 						status.textContent = `Calculating service area (${breakUnitsLabel})...`;
@@ -290,7 +597,7 @@
 							breakValue,
 							impedance: impedanceSelect.value,
 							travelDirection: directionSelect.value,
-							travelMode: activeServiceAreaTravelMode
+							travelMode: selectedTravelMode
 						})
 							.then((response) => {
 								const data = response.saPolygons?.geoJson as
@@ -298,9 +605,8 @@
 									| undefined;
 								if (!data) throw new Error('The service returned no service-area polygons.');
 
-								latestServiceAreaData = data;
-								renderServiceArea(data);
-								status.textContent = `${getServiceAreaTravelModeLabel(activeServiceAreaTravelMode)} service area (${breakValue} ${breakUnitsLabel}) calculated at ${longitude.toFixed(5)}, ${latitude.toFixed(5)}.`;
+								upsertServiceAreaViewerLayer(data);
+								status.textContent = `${selectedTravelModeLabel} service area (${breakValue} ${breakUnitsLabel}) calculated at ${longitude.toFixed(5)}, ${latitude.toFixed(5)}.`;
 							})
 							.catch((error: unknown) => {
 								status.textContent = getErrorMessage(error);
@@ -333,7 +639,7 @@
 							mapError = getErrorMessage(error);
 						});
 				});
-				const syncContextualLayerVisibility = () => {
+				const syncViewerLayers = () => {
 					if (!map) {
 						return;
 					}
@@ -348,11 +654,12 @@
 							continue;
 						}
 
-						const shouldBeVisible = activeContextualLayerIds.includes(layerId);
+						const contextualLayerEntry = getContextualLayerEntry(layerId);
+						const shouldExist = Boolean(contextualLayerEntry);
 						const hasSource = Boolean(map.getSource(sourceId));
 						const hasLayer = Boolean(map.getLayer(mapLayerId));
 
-						if (shouldBeVisible) {
+						if (shouldExist) {
 							if (!hasSource) {
 								map.addSource(
 									sourceId,
@@ -367,6 +674,11 @@
 									featureLayer.addLayerTo(map);
 								}
 							}
+							map.setLayoutProperty(
+								mapLayerId,
+								'visibility',
+								isProjectLayersVisible && contextualLayerEntry?.visible ? 'visible' : 'none'
+							);
 							continue;
 						}
 
@@ -378,7 +690,17 @@
 						}
 					}
 
-					if (latestServiceAreaData) renderServiceArea(latestServiceAreaData);
+					const serviceAreaLayer = activeViewerLayers.find(isServiceAreaLayer);
+					if (serviceAreaLayer && isProjectLayersVisible && serviceAreaLayer.visible) {
+						renderServiceArea(
+							serviceAreaLayer.data,
+							true
+						);
+					} else {
+						removeServiceAreaRender();
+					}
+					syncMarkerViewerLayers();
+					syncRoutePlannerRender();
 
 					// Contextual feature layers are appended on top — keep the LMV
 					// model layer above them so the building is never buried.
@@ -386,9 +708,13 @@
 						map.moveLayer('lmv-model');
 					}
 				};
-				const unsubscribeSelectedContextualLayerIds = selectedContextualLayerIds.subscribe((layerIds) => {
-					activeContextualLayerIds = layerIds;
-					syncContextualLayerVisibility();
+				const unsubscribeViewerLayers = viewerLayers.subscribe((layers) => {
+					activeViewerLayers = layers;
+					syncViewerLayers();
+				});
+				const unsubscribeProjectLayersVisible = projectLayersVisible.subscribe((visible) => {
+					isProjectLayersVisible = visible;
+					syncViewerLayers();
 				});
 				const unsubscribeServiceAreaEnabled = serviceAreaEnabled.subscribe((enabled) => {
 					isServiceAreaEnabled = enabled;
@@ -398,8 +724,11 @@
 						activeServiceAreaPopup = undefined;
 					}
 				});
-				const unsubscribeServiceAreaTravelMode = serviceAreaTravelMode.subscribe((travelMode) => {
-					activeServiceAreaTravelMode = travelMode;
+				const unsubscribeEnabledTravelModes = enabledTravelModes.subscribe((modes) => {
+					activeEnabledTravelModes = {
+						driving: modes?.driving,
+						walking: modes?.walking
+					};
 				});
 				const unsubscribeElevationQueryEnabled = elevationQueryEnabled.subscribe((enabled) => {
 					isElevationQueryEnabled = enabled;
@@ -411,17 +740,24 @@
 				});
 				const unsubscribeSelectedSearchLocation = selectedSearchLocation.subscribe((location) => {
 					if (!location || !map) return;
-
-					searchResultMarker?.remove();
-					searchResultMarker = new maplibregl.Marker({ color: '#007ac2' })
-						.setLngLat([location.longitude, location.latitude])
-						.setPopup(new maplibregl.Popup().setText(location.label))
-						.addTo(map);
+					upsertGeocodeResultViewerLayer({
+						longitude: location.longitude,
+						latitude: location.latitude,
+						label: location.label
+					});
 					map.flyTo({
 						center: [location.longitude, location.latitude],
 						zoom: Math.max(map.getZoom(), 16),
 						essential: true
 					});
+				});
+				const unsubscribeRoutePlannerLocations = routePlannerLocations.subscribe((locations) => {
+					activeRoutePlannerLocations = locations;
+					syncRoutePlannerRender();
+				});
+				const unsubscribeRoutePlannerRouteGeoJson = routePlannerRouteGeoJson.subscribe((geoJson) => {
+					activeRoutePlannerGeoJson = geoJson;
+					syncRoutePlannerRender();
 				});
 				const updateMapCenter = () => {
 					if (!map) return;
@@ -437,7 +773,7 @@
 					});
 					contextualFeatureLayers.set(contextualLayer.id, featureLayer);
 				}
-				syncContextualLayerVisibility();
+				syncViewerLayers();
 				map.on('click', (event) => {
 					if (!isServiceAreaEnabled && !isElevationQueryEnabled) {
 						return;
@@ -455,23 +791,34 @@
 					mapError = getErrorMessage(error);
 				});
 				basemapStyle?.on('BasemapStyleLoad', () => {
-					syncContextualLayerVisibility();
+					syncViewerLayers();
 				});
 				// No-token fallback path: re-sync contextual layers when the free
 				// basemap style (re)loads. Idempotent, so harmless in the token path.
-				map.on('style.load', syncContextualLayerVisibility);
+				map.on('style.load', syncViewerLayers);
 
 				map.on('error', (event: ErrorEvent) => {
 					mapError = getErrorMessage(event.error);
 				});
 
 				map.on('remove', () => {
+					for (const marker of markerLayers.values()) {
+						marker.remove();
+					}
+					markerLayers.clear();
+					for (const marker of routePlannerMarkers.values()) {
+						marker.remove();
+					}
+					routePlannerMarkers.clear();
 					unsubscribeSelectedBasemapStyle();
-					unsubscribeSelectedContextualLayerIds();
+					unsubscribeViewerLayers();
+					unsubscribeProjectLayersVisible();
 					unsubscribeServiceAreaEnabled();
-					unsubscribeServiceAreaTravelMode();
+					unsubscribeEnabledTravelModes();
 					unsubscribeElevationQueryEnabled();
 					unsubscribeSelectedSearchLocation();
+					unsubscribeRoutePlannerLocations();
+					unsubscribeRoutePlannerRouteGeoJson();
 				});
 			} catch (error) {
 				mapError = getErrorMessage(error);
@@ -540,5 +887,19 @@
 		background: var(--calcite-color-foreground-1);
 		color: var(--calcite-color-text-1);		font-size: var(--calcite-font-size--1);
 		box-shadow: 0 2px 8px rgb(0 0 0 / 12%);
+	}
+
+	:global(.route-stop-marker) {
+		display: grid;
+		place-items: center;
+		width: 1.1rem;
+		height: 1.1rem;
+		border: 2px solid #ffffff;
+		border-radius: 9999px;
+		background: #0ea5e9;
+		color: #ffffff;
+		font-size: 0.65rem;
+		font-weight: 700;
+		box-shadow: 0 1px 4px rgb(0 0 0 / 35%);
 	}
 </style>

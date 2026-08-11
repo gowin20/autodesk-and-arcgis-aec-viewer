@@ -1,25 +1,20 @@
 <script lang="ts">
-	import { onDestroy, onMount } from 'svelte';
-	import { get } from 'svelte/store';
-	import {
-		findSuggestions,
-		getAddressCandidate,
-		type GeocodeSuggestion
-	} from '$lib/arcgis/geocode';
-	import type { ServiceAreaTravelMode } from '$lib/arcgis/routing';
+	import { onMount } from 'svelte';
 	import { DEFAULT_BASEMAP_STYLE, selectedBasemapStyle } from '$lib/state/basemap-style';
 	import {
+		CONTEXTUAL_LAYER_GROUPS,
 		CONTEXTUAL_LAYER_OPTIONS,
-		selectedContextualLayerIds
+		type ContextualLayerOption
 	} from '$lib/state/contextual-layers';
 	import {
-		elevationQueryEnabled,
-		geocodingQuery,
-		mapCenter,
-		selectedSearchLocation,
-		serviceAreaEnabled,
-		serviceAreaTravelMode
-	} from '$lib/state/location-services';
+		addContextualViewerLayer,
+		projectLayersVisible,
+		resetViewerLayers,
+		removeViewerLayer,
+		toggleViewerLayerVisibility,
+		viewerLayers,
+		type ViewerLayer
+	} from '$lib/state/layers';
 	import type { BasemapStyleObject } from '@esri/maplibre-arcgis';
 
 	type BasemapOption = {
@@ -36,24 +31,8 @@
 	let isLoadingBasemaps = $state(true);
 	let basemapLoadError = $state<string | null>(null);
 	let selectedStyleId = $state(DEFAULT_BASEMAP_STYLE);
-	let selectedLayerIds = $state<string[]>([]);
-	let isServiceAreaEnabled = $state(false);
-	let selectedServiceAreaTravelMode = $state<ServiceAreaTravelMode>('driving');
-	let isElevationQueryEnabled = $state(false);
-	let geocodingSearchQuery = $state('');
-	let geocodeSuggestions = $state<GeocodeSuggestion[]>([]);
-	let geocodeError = $state<string | null>(null);
-	let isGeocoding = $state(false);
-	let suggestionTimer: ReturnType<typeof setTimeout> | undefined;
-	let suggestionRequestId = 0;
-	let contextualLayerCombobox:
-		| (HTMLElement & {
-				selectedItems?: Array<{ value?: string }>;
-		  })
-		| undefined;
-
-	const CONTEXTUAL_LAYER_GROUP_ORDER = ['Hydrology', 'Infrastructure'] as const;
-
+	let projectLayers = $state<ViewerLayer[]>([]);
+	let isProjectLayersVisible = $state(true);
 	const selectBasemapStyle = (styleId: string) => {
 		selectedStyleId = styleId;
 		selectedBasemapStyle.set(styleId);
@@ -66,31 +45,49 @@
 
 	const getSelectedStyleLabel = (): string =>
 		basemapOptions.find((style) => style.value === selectedStyleId)?.label ?? 'Select basemap style';
-	const getContextualLayersForGroup = (group: (typeof CONTEXTUAL_LAYER_GROUP_ORDER)[number]) =>
-		CONTEXTUAL_LAYER_OPTIONS.filter((layer) => layer.group === group);
+	const getAvailableContextualLayers = (): ContextualLayerOption[] => {
+		const activeContextualLayerIds = new Set(
+			projectLayers
+				.filter((layer): layer is Extract<ViewerLayer, { kind: 'contextual' }> => layer.kind === 'contextual')
+				.map((layer) => layer.contextualLayerId)
+		);
+		return CONTEXTUAL_LAYER_OPTIONS.filter((layer) => !activeContextualLayerIds.has(layer.id));
+	};
+	const getAvailableContextualLayersForGroup = (group: string): ContextualLayerOption[] =>
+		getAvailableContextualLayers().filter((layer) => layer.group === group);
+	const getLayerIcon = (visible: boolean): string => (visible ? 'view-visible' : 'view-hide');
+	const canClearLayers = (): boolean => {
+		if (!isProjectLayersVisible) return true;
+		return !(projectLayers.length === 1 && projectLayers[0]?.kind === 'site-location');
+	};
+	const getLayerDescription = (layer: ViewerLayer): string => {
+		switch (layer.kind) {
+			case 'contextual':
+				return 'Contextual layer';
+			case 'service-area':
+				return 'Service area result';
+			case 'site-location':
+				return 'Default site marker';
+			case 'geocode-result':
+				return 'Geocoding result marker';
+			case 'elevation-result':
+				return 'Elevation result marker';
+		}
+	};
+	const hasArcgisToken = arcgisToken.length > 0;
 
 	onMount(() => {
 		const unsubscribeSelectedBasemapStyle = selectedBasemapStyle.subscribe((styleId) => {
 			selectedStyleId = styleId;
 		});
-		const unsubscribeSelectedContextualLayerIds = selectedContextualLayerIds.subscribe((layerIds) => {
-			selectedLayerIds = layerIds;
+		const unsubscribeViewerLayers = viewerLayers.subscribe((layers) => {
+			projectLayers = layers;
 		});
-		const unsubscribeServiceAreaEnabled = serviceAreaEnabled.subscribe((enabled) => {
-			isServiceAreaEnabled = enabled;
+		const unsubscribeProjectLayersVisible = projectLayersVisible.subscribe((visible) => {
+			isProjectLayersVisible = visible;
 		});
-		const unsubscribeServiceAreaTravelMode = serviceAreaTravelMode.subscribe((travelMode) => {
-			selectedServiceAreaTravelMode = travelMode;
-		});
-		const unsubscribeElevationQueryEnabled = elevationQueryEnabled.subscribe((enabled) => {
-			isElevationQueryEnabled = enabled;
-		});
-		const unsubscribeGeocodingQuery = geocodingQuery.subscribe((query) => {
-			geocodingSearchQuery = query;
-		});
-
 		void (async () => {
-			if (!arcgisToken) {
+			if (!hasArcgisToken) {
 				basemapLoadError =
 					'Set VITE_ARCGIS_ACCESS_TOKEN (or PUBLIC_ARCGIS_ACCESS_TOKEN) to load basemap styles.';
 				isLoadingBasemaps = false;
@@ -114,102 +111,14 @@
 
 		return () => {
 			unsubscribeSelectedBasemapStyle();
-			unsubscribeSelectedContextualLayerIds();
-			unsubscribeServiceAreaEnabled();
-			unsubscribeServiceAreaTravelMode();
-			unsubscribeElevationQueryEnabled();
-			unsubscribeGeocodingQuery();
+			unsubscribeViewerLayers();
+			unsubscribeProjectLayersVisible();
 		};
-	});
-
-	const onContextualLayerSelectionChange = () => {
-		const nextSelection =
-			contextualLayerCombobox?.selectedItems
-				?.map((item) => item.value)
-				.filter((value): value is string => Boolean(value)) ?? [];
-		selectedContextualLayerIds.set(nextSelection);
-	};
-	const toggleServiceArea = () => {
-		const enabled = !isServiceAreaEnabled;
-		serviceAreaEnabled.set(enabled);
-		if (enabled) elevationQueryEnabled.set(false);
-	};
-	const setServiceAreaTravelMode = (travelMode: ServiceAreaTravelMode) => {
-		selectedServiceAreaTravelMode = travelMode;
-		serviceAreaTravelMode.set(travelMode);
-	};
-	const toggleElevationQuery = () => {
-		const enabled = !isElevationQueryEnabled;
-		elevationQueryEnabled.set(enabled);
-		if (enabled) serviceAreaEnabled.set(false);
-	};
-	const onGeocodingInput = (event: Event) => {
-		const target = event.target as { inputValue?: string } | null;
-		const query = target?.inputValue?.trim() ?? '';
-		geocodingQuery.set(query);
-		geocodeError = null;
-		if (suggestionTimer) clearTimeout(suggestionTimer);
-
-		if (query.length < 3) {
-			geocodeSuggestions = [];
-			isGeocoding = false;
-			return;
-		}
-
-		const requestId = ++suggestionRequestId;
-		isGeocoding = true;
-		suggestionTimer = setTimeout(() => {
-			void findSuggestions(query, get(mapCenter))
-				.then((suggestions) => {
-					if (requestId === suggestionRequestId) {
-						geocodeSuggestions = suggestions ?? [];
-					}
-				})
-				.catch((error: unknown) => {
-					if (requestId === suggestionRequestId) {
-						geocodeSuggestions = [];
-						geocodeError = error instanceof Error ? error.message : 'Address suggestions failed.';
-					}
-				})
-				.finally(() => {
-					if (requestId === suggestionRequestId) isGeocoding = false;
-				});
-		}, 250);
-	};
-	const selectGeocodeSuggestion = async (suggestion: GeocodeSuggestion) => {
-		isGeocoding = true;
-		geocodeError = null;
-		try {
-			const candidate = await getAddressCandidate(suggestion.text, suggestion.magicKey);
-			if (!candidate) {
-				throw new Error('No matching location was found.');
-			}
-
-			geocodingQuery.set(candidate.address);
-			geocodeSuggestions = [];
-			selectedSearchLocation.set({
-				longitude: candidate.location.x,
-				latitude: candidate.location.y,
-				label: candidate.address
-			});
-		} catch (error: unknown) {
-			geocodeError = error instanceof Error ? error.message : 'Address search failed.';
-		} finally {
-			isGeocoding = false;
-		}
-	};
-
-	onDestroy(() => {
-		if (suggestionTimer) clearTimeout(suggestionTimer);
 	});
 </script>
 
 <calcite-panel heading="Viewer controls" description="Configure the map display">
 	<calcite-block heading="View" description="Map presentation" open>
-		<calcite-label layout="inline-space-between">
-			Show project layers
-			<calcite-switch checked></calcite-switch>
-		</calcite-label>
 		<calcite-label>
 			Display mode
 			<calcite-segmented-control width="full">
@@ -245,121 +154,111 @@
 		{/if}
 	</calcite-block>
 
-	<calcite-block heading="Layers" description="Project data" open>
-		<calcite-label>
-			Contextual layers
-			<calcite-combobox
-				bind:this={contextualLayerCombobox}
-				label="Contextual layers"
-				selection-mode="multiple"
-				selection-display="all"
-				selection-appearance="icon"
-				scale="m"
-				placeholder="Select contextual layers"
-				oncalciteComboboxChange={onContextualLayerSelectionChange}
+	<calcite-block heading="ArcGIS data" description="Project data" open>
+		<div class="layer-controls-row">
+			<calcite-label class="layer-visibility-control" layout="inline-space-between">
+				Show project layers
+				<calcite-switch
+					scale="s"
+					checked={isProjectLayersVisible}
+					oncalciteSwitchChange={(event) =>
+						projectLayersVisible.set(Boolean((event.target as { checked?: boolean }).checked))}
+				></calcite-switch>
+			</calcite-label>
+		</div>
+		<calcite-dropdown width="full" placement="bottom-start" close-on-select>
+			<calcite-button
+				slot="trigger"
+				width="full"
+				appearance="outline"
+				disabled={getAvailableContextualLayers().length === 0}
 			>
-				{#each CONTEXTUAL_LAYER_GROUP_ORDER as group}
-					<calcite-combobox-item-group label={group}>
-						{#each getContextualLayersForGroup(group) as layer}
-							<calcite-combobox-item
-								value={layer.id}
-								heading={layer.label}
-								selected={selectedLayerIds.includes(layer.id)}
-							></calcite-combobox-item>
+				Add data
+			</calcite-button>
+			<calcite-dropdown-group group-title="Data sources" selection-mode="none">
+				<calcite-dropdown-item disabled>
+					Data sourced from ArcGIS Living Atlas, ArcGIS Hub, and ArcGIS Online
+				</calcite-dropdown-item>
+			</calcite-dropdown-group>
+			{#each CONTEXTUAL_LAYER_GROUPS as group}
+				{#if getAvailableContextualLayersForGroup(group).length > 0}
+					<calcite-dropdown-group group-title={group} selection-mode="none">
+						{#each getAvailableContextualLayersForGroup(group) as layer}
+							<calcite-dropdown-item onclick={() => addContextualViewerLayer(layer.id)}>
+								{layer.label}
+							</calcite-dropdown-item>
 						{/each}
-					</calcite-combobox-item-group>
-				{/each}
-			</calcite-combobox>
-		</calcite-label>
-		<calcite-label>
-			Building layers
-			<calcite-combobox
-				label="Building layers"
-				selection-mode="multiple"
-				selection-display="all"
-				selection-appearance="icon"
-				scale="m"
-				placeholder="Select building layers"
-			>
-			</calcite-combobox>
-		</calcite-label>
-	</calcite-block>
-
-	<calcite-block heading="Location services" description="Search and analysis" open>
-		<calcite-label>
-			Elevation query
-			<calcite-button
-				width="full"
-				appearance={isElevationQueryEnabled ? 'solid' : 'outline'}
-				onclick={toggleElevationQuery}
-			>
-				Elevation query {isElevationQueryEnabled ? 'On' : 'Off'}
-			</calcite-button>
-		</calcite-label>
-
-		<calcite-label>
-			Geocoding
-			<calcite-autocomplete
-				input-value={geocodingSearchQuery}
-				label="Search by address or place"
-				placeholder="Search by address or place"
-				icon="search"
-				clearable
-				loading={isGeocoding}
-				open={geocodeSuggestions.length > 0}
-				oncalciteAutocompleteTextInput={onGeocodingInput}
-			>
-				{#each geocodeSuggestions as suggestion (suggestion.magicKey)}
-					<calcite-autocomplete-item
-						heading={suggestion.text}
-						value={suggestion.magicKey}
-						icon-start="pin"
-						oncalciteAutocompleteItemSelect={() => selectGeocodeSuggestion(suggestion)}
-					></calcite-autocomplete-item>
-				{/each}
-			</calcite-autocomplete>
-		</calcite-label>
-		{#if geocodeError}
-			<calcite-notice open kind="danger" icon>
-				<div slot="message">{geocodeError}</div>
+					</calcite-dropdown-group>
+				{/if}
+			{/each}
+		</calcite-dropdown>
+		<h4 class="layers-list-heading">Layers</h4>
+		{#if projectLayers.length === 0}
+			<calcite-notice class="layers-list-content" open kind="info" icon>
+				<div slot="message">No layers have been added yet.</div>
 			</calcite-notice>
+		{:else}
+			<calcite-list class="layers-list-content" label="Project layers">
+				{#each projectLayers as layer (layer.id)}
+					<calcite-list-item
+						value={layer.id}
+						label={layer.label}
+						description={getLayerDescription(layer)}
+					>
+						<calcite-action
+							slot="actions-end"
+							icon={getLayerIcon(layer.visible)}
+							text="Toggle visibility"
+							onclick={() => toggleViewerLayerVisibility(layer.id)}
+						></calcite-action>
+						<calcite-action
+							slot="actions-end"
+							icon="x"
+							text="Remove layer"
+							onclick={() => removeViewerLayer(layer.id)}
+						></calcite-action>
+					</calcite-list-item>
+				{/each}
+			</calcite-list>
 		{/if}
+		<calcite-button
+			class="clear-layers-action"
+			width="full"
+			appearance="outline"
+			kind="neutral"
+			scale="s"
+			icon-start="trash"
+			disabled={!canClearLayers()}
+			onclick={resetViewerLayers}
+		>
+			Clear all layers
+		</calcite-button>
 	</calcite-block>
 
-	<calcite-block heading="Routing" description="Network analysis requests" open>
-		<calcite-label>
-			Service area
-			<calcite-button
-				width="full"
-				appearance={isServiceAreaEnabled ? 'solid' : 'outline'}
-				onclick={toggleServiceArea}
-			>
-				Service area {isServiceAreaEnabled ? 'On' : 'Off'}
-			</calcite-button>
-		</calcite-label>
-		<calcite-label>
-			Travel mode
-			<calcite-segmented-control width="full">
-				<calcite-segmented-control-item
-					value="driving"
-					checked={selectedServiceAreaTravelMode === 'driving'}
-					onclick={() => setServiceAreaTravelMode('driving')}
-				>
-					Driving
-				</calcite-segmented-control-item>
-				<calcite-segmented-control-item
-					value="walking"
-					checked={selectedServiceAreaTravelMode === 'walking'}
-					onclick={() => setServiceAreaTravelMode('walking')}
-				>
-					Walking
-				</calcite-segmented-control-item>
-			</calcite-segmented-control>
-		</calcite-label>
-		{#if isServiceAreaEnabled}
-			<calcite-notice open kind="info" icon>
-				<div slot="message">Click the map to set a facility and configure the request.</div>
-			</calcite-notice>
-		{/if}
-	</calcite-block>
 </calcite-panel>
+
+<style>
+	.layers-list-heading {
+		margin: 1rem 0 0.5rem;
+		font-size: var(--calcite-font-size--1);
+		font-weight: var(--calcite-font-weight-medium);
+		color: var(--calcite-color-text-1);
+	}
+
+	.layers-list-content {
+		margin-top: 0.5rem;
+	}
+
+	.layer-controls-row {
+		display: block;
+		margin-bottom: 0.75rem;
+	}
+
+	.layer-visibility-control {
+		margin: 0;
+	}
+
+	.clear-layers-action {
+		margin-top: 0.75rem;
+	}
+</style>

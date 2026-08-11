@@ -1,6 +1,6 @@
 <script lang="ts">
 	import AppHeader from './AppHeader.svelte';
-	import ContextPanel from './ContextPanel.svelte';
+	import ToolPanel from './ToolPanel.svelte';
 	import ViewerCanvas from './ViewerCanvas.svelte';
 	import ViewerControls from './ViewerControls.svelte';
 
@@ -32,11 +32,11 @@
 			<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 			<calcite-action
 				icon={rightCollapsed ? 'chevrons-left' : 'chevrons-right'}
-				text={rightCollapsed ? 'Open contextual information' : 'Collapse contextual information'}
+				text={rightCollapsed ? 'Open tools' : 'Collapse tools'}
 				onclick={() => (rightCollapsed = !rightCollapsed)}
 			></calcite-action>
 		</calcite-action-bar>
-		<ContextPanel />
+		<ToolPanel />
 	</calcite-shell-panel>
 </calcite-shell>
 
