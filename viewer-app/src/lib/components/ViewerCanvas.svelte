@@ -1,9 +1,22 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import type { ErrorEvent, GeoJSONSourceSpecification, Map as MaplibreMap } from 'maplibre-gl';
+	import type {
+		ErrorEvent,
+		GeoJSONSource,
+		GeoJSONSourceSpecification,
+		Map as MaplibreMap
+	} from 'maplibre-gl';
+	import { getElevationAtLocation } from '$lib/arcgis/elevation';
+	import { fetchServiceArea, type ServiceAreaParameters } from '$lib/arcgis/routing';
 	import { DEFAULT_BASEMAP_STYLE, selectedBasemapStyle } from '$lib/state/basemap-style';
 	import { CONTEXTUAL_LAYER_OPTIONS, selectedContextualLayerIds } from '$lib/state/contextual-layers';
-	import { elevationQueryEnabled, serviceAreaEnabled } from '$lib/state/location-services';
+	import {
+		elevationQueryEnabled,
+		mapCenter,
+		selectedSearchLocation,
+		serviceAreaEnabled,
+		serviceAreaTravelMode
+	} from '$lib/state/location-services';
 	import { createLmvBridge, createMercatorModelPlacement } from '$lib/lmv/lmv-maplibre-bridge';
 	import 'maplibre-gl/dist/maplibre-gl.css';
 
@@ -26,6 +39,8 @@
 
 	const getErrorMessage = (error: unknown): string =>
 		error instanceof Error ? error.message : 'Map failed to load.';
+	const getServiceAreaTravelModeLabel = (travelMode: ServiceAreaParameters['travelMode']): string =>
+		travelMode === 'walking' ? 'Walking' : 'Driving';
 
 	onMount(() => {
 		if (!mapContainer) {
@@ -113,7 +128,9 @@
 				let activeStyleId = DEFAULT_BASEMAP_STYLE;
 				let activeContextualLayerIds: string[] = [];
 				let isServiceAreaEnabled = false;
+				let activeServiceAreaTravelMode: ServiceAreaParameters['travelMode'] = 'driving';
 				let isElevationQueryEnabled = false;
+				let latestServiceAreaData: GeoJSONSourceSpecification['data'] | undefined;
 				const contextualFeatureLayers = new Map<
 					string,
 					Awaited<ReturnType<typeof FeatureLayer.fromUrl>>
@@ -122,6 +139,178 @@
 					CONTEXTUAL_LAYER_OPTIONS.map((layer) => [layer.id, layer] as const)
 				);
 				let activeServiceAreaPopup: InstanceType<typeof maplibregl.Popup> | undefined;
+				let searchResultMarker: InstanceType<typeof maplibregl.Marker> | undefined;
+				const SERVICE_AREA_SOURCE_ID = 'service-area-result';
+				const SERVICE_AREA_FILL_LAYER_ID = 'service-area-fill';
+				const SERVICE_AREA_OUTLINE_LAYER_ID = 'service-area-outline';
+
+				const renderServiceArea = (data: GeoJSONSourceSpecification['data']) => {
+					if (!map?.isStyleLoaded()) return;
+
+					const existingSource = map.getSource(SERVICE_AREA_SOURCE_ID) as GeoJSONSource | undefined;
+					if (existingSource) {
+						existingSource.setData(data);
+					} else {
+						map.addSource(SERVICE_AREA_SOURCE_ID, { type: 'geojson', data });
+					}
+					if (!map.getLayer(SERVICE_AREA_FILL_LAYER_ID)) {
+						map.addLayer({
+							id: SERVICE_AREA_FILL_LAYER_ID,
+							type: 'fill',
+							source: SERVICE_AREA_SOURCE_ID,
+							paint: {
+								'fill-color': '#007ac2',
+								'fill-opacity': 0.22
+							}
+						});
+					}
+					if (!map.getLayer(SERVICE_AREA_OUTLINE_LAYER_ID)) {
+						map.addLayer({
+							id: SERVICE_AREA_OUTLINE_LAYER_ID,
+							type: 'line',
+							source: SERVICE_AREA_SOURCE_ID,
+							paint: {
+								'line-color': '#00619b',
+								'line-width': 2
+							}
+						});
+					}
+				};
+
+				const openElevationResult = async (longitude: number, latitude: number) => {
+					const popupContent = document.createElement('div');
+					popupContent.innerHTML = `
+						<calcite-panel heading="Elevation" description="ArcGIS Elevation service">
+							<calcite-notice open kind="info" icon>
+								<div slot="message">Querying elevation...</div>
+							</calcite-notice>
+						</calcite-panel>
+					`;
+					activeServiceAreaPopup = new maplibregl.Popup({ closeOnClick: false })
+						.setLngLat([longitude, latitude])
+						.setDOMContent(popupContent)
+						.addTo(map!);
+
+					try {
+						const response = await getElevationAtLocation(longitude, latitude);
+						const elevationMeters = response.result.point.z;
+						const elevationFeet = elevationMeters * 3.28084;
+						popupContent.innerHTML = `
+							<calcite-panel heading="Elevation" description="ArcGIS Elevation service">
+								<calcite-block open heading="${elevationMeters.toLocaleString()} m">
+									<p>${elevationFeet.toLocaleString(undefined, { maximumFractionDigits: 0 })} ft above mean sea level</p>
+									<p>Longitude: ${longitude.toFixed(5)}</p>
+									<p>Latitude: ${latitude.toFixed(5)}</p>
+								</calcite-block>
+							</calcite-panel>
+						`;
+					} catch (error: unknown) {
+						const message = getErrorMessage(error);
+						popupContent.innerHTML = `
+							<calcite-panel heading="Elevation">
+								<calcite-notice open kind="danger" icon>
+									<div slot="message"></div>
+								</calcite-notice>
+							</calcite-panel>
+						`;
+						const messageElement = popupContent.querySelector('[slot="message"]');
+						if (messageElement) messageElement.textContent = message;
+					}
+				};
+
+				const openServiceAreaForm = (longitude: number, latitude: number) => {
+					const popupContent = document.createElement('div');
+					popupContent.className = 'service-area-popup';
+					popupContent.innerHTML = `
+						<calcite-panel heading="Service area" description="Configure network analysis">
+							<p>Travel mode: ${getServiceAreaTravelModeLabel(activeServiceAreaTravelMode)}</p>
+							<calcite-label>
+								Break value <span id="service-area-break-units">(minutes)</span>
+								<calcite-input id="service-area-break" type="number" min="1" step="1" value="5"></calcite-input>
+							</calcite-label>
+							<calcite-label>
+								Measure
+								<calcite-select id="service-area-impedance">
+									<calcite-option value="time" selected>Travel time (minutes)</calcite-option>
+									<calcite-option value="distance">Travel distance (kilometers)</calcite-option>
+								</calcite-select>
+							</calcite-label>
+							<calcite-label>
+								Travel direction
+								<calcite-select id="service-area-direction">
+									<calcite-option value="facilitiesToIncidents" selected>Away from facility</calcite-option>
+									<calcite-option value="incidentsToFacilities">Toward facility</calcite-option>
+								</calcite-select>
+							</calcite-label>
+							<calcite-button id="service-area-run" width="full">Calculate service area</calcite-button>
+							<p id="service-area-status" role="status"></p>
+						</calcite-panel>
+					`;
+
+					activeServiceAreaPopup = new maplibregl.Popup({
+						closeOnClick: false,
+						maxWidth: '320px'
+					})
+						.setLngLat([longitude, latitude])
+						.setDOMContent(popupContent)
+						.addTo(map!);
+
+					const breakInput = popupContent.querySelector('#service-area-break') as
+						| (HTMLElement & { value: string })
+						| null;
+					const breakUnits = popupContent.querySelector('#service-area-break-units');
+					const impedanceSelect = popupContent.querySelector('#service-area-impedance') as
+						| (HTMLElement & { value: ServiceAreaParameters['impedance'] })
+						| null;
+					const directionSelect = popupContent.querySelector('#service-area-direction') as
+						| (HTMLElement & { value: ServiceAreaParameters['travelDirection'] })
+						| null;
+					const runButton = popupContent.querySelector('#service-area-run') as
+						| (HTMLElement & { loading: boolean; disabled: boolean })
+						| null;
+					const status = popupContent.querySelector('#service-area-status');
+					const getBreakUnitsLabel = () =>
+						impedanceSelect?.value === 'distance' ? 'kilometers' : 'minutes';
+					const syncBreakUnitsLabel = () => {
+						if (!breakUnits) return;
+						breakUnits.textContent = `(${getBreakUnitsLabel()})`;
+					};
+					impedanceSelect?.addEventListener('calciteSelectChange', syncBreakUnitsLabel);
+					syncBreakUnitsLabel();
+
+					runButton?.addEventListener('click', () => {
+						if (!breakInput || !impedanceSelect || !directionSelect || !runButton || !status) return;
+
+						const breakValue = Number(breakInput.value);
+						const breakUnitsLabel = getBreakUnitsLabel();
+						runButton.loading = true;
+						runButton.disabled = true;
+						status.textContent = `Calculating service area (${breakUnitsLabel})...`;
+						void fetchServiceArea([longitude, latitude], {
+							breakValue,
+							impedance: impedanceSelect.value,
+							travelDirection: directionSelect.value,
+							travelMode: activeServiceAreaTravelMode
+						})
+							.then((response) => {
+								const data = response.saPolygons?.geoJson as
+									| GeoJSONSourceSpecification['data']
+									| undefined;
+								if (!data) throw new Error('The service returned no service-area polygons.');
+
+								latestServiceAreaData = data;
+								renderServiceArea(data);
+								status.textContent = `${getServiceAreaTravelModeLabel(activeServiceAreaTravelMode)} service area (${breakValue} ${breakUnitsLabel}) calculated at ${longitude.toFixed(5)}, ${latitude.toFixed(5)}.`;
+							})
+							.catch((error: unknown) => {
+								status.textContent = getErrorMessage(error);
+							})
+							.finally(() => {
+								runButton.loading = false;
+								runButton.disabled = false;
+							});
+					});
+				};
 
 				const unsubscribeSelectedBasemapStyle = selectedBasemapStyle.subscribe((styleId) => {
 					if (!basemapStyle || styleId === activeStyleId) {
@@ -189,6 +378,8 @@
 						}
 					}
 
+					if (latestServiceAreaData) renderServiceArea(latestServiceAreaData);
+
 					// Contextual feature layers are appended on top — keep the LMV
 					// model layer above them so the building is never buried.
 					if (map.getLayer('lmv-model')) {
@@ -201,18 +392,44 @@
 				});
 				const unsubscribeServiceAreaEnabled = serviceAreaEnabled.subscribe((enabled) => {
 					isServiceAreaEnabled = enabled;
+					if (map) map.getCanvas().style.cursor = enabled ? 'crosshair' : '';
 					if (!enabled && !isElevationQueryEnabled) {
 						activeServiceAreaPopup?.remove();
 						activeServiceAreaPopup = undefined;
 					}
 				});
+				const unsubscribeServiceAreaTravelMode = serviceAreaTravelMode.subscribe((travelMode) => {
+					activeServiceAreaTravelMode = travelMode;
+				});
 				const unsubscribeElevationQueryEnabled = elevationQueryEnabled.subscribe((enabled) => {
 					isElevationQueryEnabled = enabled;
+					if (map) map.getCanvas().style.cursor = enabled ? 'crosshair' : '';
 					if (!enabled && !isServiceAreaEnabled) {
 						activeServiceAreaPopup?.remove();
 						activeServiceAreaPopup = undefined;
 					}
 				});
+				const unsubscribeSelectedSearchLocation = selectedSearchLocation.subscribe((location) => {
+					if (!location || !map) return;
+
+					searchResultMarker?.remove();
+					searchResultMarker = new maplibregl.Marker({ color: '#007ac2' })
+						.setLngLat([location.longitude, location.latitude])
+						.setPopup(new maplibregl.Popup().setText(location.label))
+						.addTo(map);
+					map.flyTo({
+						center: [location.longitude, location.latitude],
+						zoom: Math.max(map.getZoom(), 16),
+						essential: true
+					});
+				});
+				const updateMapCenter = () => {
+					if (!map) return;
+					const center = map.getCenter();
+					mapCenter.set({ lng: center.lng, lat: center.lat });
+				};
+				map.on('moveend', updateMapCenter);
+				updateMapCenter();
 
 				for (const contextualLayer of CONTEXTUAL_LAYER_OPTIONS) {
 					const featureLayer = await FeatureLayer.fromUrl(contextualLayer.url, {
@@ -227,22 +444,11 @@
 					}
 
 					activeServiceAreaPopup?.remove();
-					const popupContent = document.createElement('div');
-					const coordinatesHtml = `
-						<calcite-block open heading="Coordinates">
-							<p>Longitude: ${event.lngLat.lng.toFixed(5)}</p>
-							<p>Latitude: ${event.lngLat.lat.toFixed(5)}</p>
-						</calcite-block>
-					`;
-					popupContent.innerHTML = `
-						${isServiceAreaEnabled ? `<calcite-panel heading="Service area" description="Clicked location">${coordinatesHtml}</calcite-panel>` : ''}
-						${isElevationQueryEnabled ? `<calcite-panel heading="Elevation query" description="Clicked location">${coordinatesHtml}</calcite-panel>` : ''}
-					`;
-
-					activeServiceAreaPopup = new maplibregl.Popup({ closeOnClick: false })
-						.setLngLat(event.lngLat)
-						.setDOMContent(popupContent)
-						.addTo(map);
+					if (isServiceAreaEnabled) {
+						openServiceAreaForm(event.lngLat.lng, event.lngLat.lat);
+					} else if (isElevationQueryEnabled) {
+						void openElevationResult(event.lngLat.lng, event.lngLat.lat);
+					}
 				});
 
 				basemapStyle?.on('BasemapStyleError', (error) => {
@@ -263,7 +469,9 @@
 					unsubscribeSelectedBasemapStyle();
 					unsubscribeSelectedContextualLayerIds();
 					unsubscribeServiceAreaEnabled();
+					unsubscribeServiceAreaTravelMode();
 					unsubscribeElevationQueryEnabled();
+					unsubscribeSelectedSearchLocation();
 				});
 			} catch (error) {
 				mapError = getErrorMessage(error);

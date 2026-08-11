@@ -1,5 +1,12 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
+	import { get } from 'svelte/store';
+	import {
+		findSuggestions,
+		getAddressCandidate,
+		type GeocodeSuggestion
+	} from '$lib/arcgis/geocode';
+	import type { ServiceAreaTravelMode } from '$lib/arcgis/routing';
 	import { DEFAULT_BASEMAP_STYLE, selectedBasemapStyle } from '$lib/state/basemap-style';
 	import {
 		CONTEXTUAL_LAYER_OPTIONS,
@@ -8,7 +15,10 @@
 	import {
 		elevationQueryEnabled,
 		geocodingQuery,
-		serviceAreaEnabled
+		mapCenter,
+		selectedSearchLocation,
+		serviceAreaEnabled,
+		serviceAreaTravelMode
 	} from '$lib/state/location-services';
 	import type { BasemapStyleObject } from '@esri/maplibre-arcgis';
 
@@ -28,8 +38,14 @@
 	let selectedStyleId = $state(DEFAULT_BASEMAP_STYLE);
 	let selectedLayerIds = $state<string[]>([]);
 	let isServiceAreaEnabled = $state(false);
+	let selectedServiceAreaTravelMode = $state<ServiceAreaTravelMode>('driving');
 	let isElevationQueryEnabled = $state(false);
 	let geocodingSearchQuery = $state('');
+	let geocodeSuggestions = $state<GeocodeSuggestion[]>([]);
+	let geocodeError = $state<string | null>(null);
+	let isGeocoding = $state(false);
+	let suggestionTimer: ReturnType<typeof setTimeout> | undefined;
+	let suggestionRequestId = 0;
 	let contextualLayerCombobox:
 		| (HTMLElement & {
 				selectedItems?: Array<{ value?: string }>;
@@ -62,6 +78,9 @@
 		});
 		const unsubscribeServiceAreaEnabled = serviceAreaEnabled.subscribe((enabled) => {
 			isServiceAreaEnabled = enabled;
+		});
+		const unsubscribeServiceAreaTravelMode = serviceAreaTravelMode.subscribe((travelMode) => {
+			selectedServiceAreaTravelMode = travelMode;
 		});
 		const unsubscribeElevationQueryEnabled = elevationQueryEnabled.subscribe((enabled) => {
 			isElevationQueryEnabled = enabled;
@@ -97,6 +116,7 @@
 			unsubscribeSelectedBasemapStyle();
 			unsubscribeSelectedContextualLayerIds();
 			unsubscribeServiceAreaEnabled();
+			unsubscribeServiceAreaTravelMode();
 			unsubscribeElevationQueryEnabled();
 			unsubscribeGeocodingQuery();
 		};
@@ -110,15 +130,78 @@
 		selectedContextualLayerIds.set(nextSelection);
 	};
 	const toggleServiceArea = () => {
-		serviceAreaEnabled.set(!isServiceAreaEnabled);
+		const enabled = !isServiceAreaEnabled;
+		serviceAreaEnabled.set(enabled);
+		if (enabled) elevationQueryEnabled.set(false);
+	};
+	const setServiceAreaTravelMode = (travelMode: ServiceAreaTravelMode) => {
+		selectedServiceAreaTravelMode = travelMode;
+		serviceAreaTravelMode.set(travelMode);
 	};
 	const toggleElevationQuery = () => {
-		elevationQueryEnabled.set(!isElevationQueryEnabled);
+		const enabled = !isElevationQueryEnabled;
+		elevationQueryEnabled.set(enabled);
+		if (enabled) serviceAreaEnabled.set(false);
 	};
 	const onGeocodingInput = (event: Event) => {
-		const target = event.target as { value?: string } | null;
-		geocodingQuery.set(target?.value ?? '');
+		const target = event.target as { inputValue?: string } | null;
+		const query = target?.inputValue?.trim() ?? '';
+		geocodingQuery.set(query);
+		geocodeError = null;
+		if (suggestionTimer) clearTimeout(suggestionTimer);
+
+		if (query.length < 3) {
+			geocodeSuggestions = [];
+			isGeocoding = false;
+			return;
+		}
+
+		const requestId = ++suggestionRequestId;
+		isGeocoding = true;
+		suggestionTimer = setTimeout(() => {
+			void findSuggestions(query, get(mapCenter))
+				.then((suggestions) => {
+					if (requestId === suggestionRequestId) {
+						geocodeSuggestions = suggestions ?? [];
+					}
+				})
+				.catch((error: unknown) => {
+					if (requestId === suggestionRequestId) {
+						geocodeSuggestions = [];
+						geocodeError = error instanceof Error ? error.message : 'Address suggestions failed.';
+					}
+				})
+				.finally(() => {
+					if (requestId === suggestionRequestId) isGeocoding = false;
+				});
+		}, 250);
 	};
+	const selectGeocodeSuggestion = async (suggestion: GeocodeSuggestion) => {
+		isGeocoding = true;
+		geocodeError = null;
+		try {
+			const candidate = await getAddressCandidate(suggestion.text, suggestion.magicKey);
+			if (!candidate) {
+				throw new Error('No matching location was found.');
+			}
+
+			geocodingQuery.set(candidate.address);
+			geocodeSuggestions = [];
+			selectedSearchLocation.set({
+				longitude: candidate.location.x,
+				latitude: candidate.location.y,
+				label: candidate.address
+			});
+		} catch (error: unknown) {
+			geocodeError = error instanceof Error ? error.message : 'Address search failed.';
+		} finally {
+			isGeocoding = false;
+		}
+	};
+
+	onDestroy(() => {
+		if (suggestionTimer) clearTimeout(suggestionTimer);
+	});
 </script>
 
 <calcite-panel heading="Viewer controls" description="Configure the map display">
@@ -204,16 +287,6 @@
 
 	<calcite-block heading="Location services" description="Search and analysis" open>
 		<calcite-label>
-			Service area
-			<calcite-button
-				width="full"
-				appearance={isServiceAreaEnabled ? 'solid' : 'outline'}
-				onclick={toggleServiceArea}
-			>
-				Service area {isServiceAreaEnabled ? 'On' : 'Off'}
-			</calcite-button>
-		</calcite-label>
-		<calcite-label>
 			Elevation query
 			<calcite-button
 				width="full"
@@ -226,11 +299,67 @@
 
 		<calcite-label>
 			Geocoding
-			<calcite-input
-				value={geocodingSearchQuery}
+			<calcite-autocomplete
+				input-value={geocodingSearchQuery}
+				label="Search by address or place"
 				placeholder="Search by address or place"
-				oncalciteInputInput={onGeocodingInput}
-			></calcite-input>
+				icon="search"
+				clearable
+				loading={isGeocoding}
+				open={geocodeSuggestions.length > 0}
+				oncalciteAutocompleteTextInput={onGeocodingInput}
+			>
+				{#each geocodeSuggestions as suggestion (suggestion.magicKey)}
+					<calcite-autocomplete-item
+						heading={suggestion.text}
+						value={suggestion.magicKey}
+						icon-start="pin"
+						oncalciteAutocompleteItemSelect={() => selectGeocodeSuggestion(suggestion)}
+					></calcite-autocomplete-item>
+				{/each}
+			</calcite-autocomplete>
 		</calcite-label>
+		{#if geocodeError}
+			<calcite-notice open kind="danger" icon>
+				<div slot="message">{geocodeError}</div>
+			</calcite-notice>
+		{/if}
+	</calcite-block>
+
+	<calcite-block heading="Routing" description="Network analysis requests" open>
+		<calcite-label>
+			Service area
+			<calcite-button
+				width="full"
+				appearance={isServiceAreaEnabled ? 'solid' : 'outline'}
+				onclick={toggleServiceArea}
+			>
+				Service area {isServiceAreaEnabled ? 'On' : 'Off'}
+			</calcite-button>
+		</calcite-label>
+		<calcite-label>
+			Travel mode
+			<calcite-segmented-control width="full">
+				<calcite-segmented-control-item
+					value="driving"
+					checked={selectedServiceAreaTravelMode === 'driving'}
+					onclick={() => setServiceAreaTravelMode('driving')}
+				>
+					Driving
+				</calcite-segmented-control-item>
+				<calcite-segmented-control-item
+					value="walking"
+					checked={selectedServiceAreaTravelMode === 'walking'}
+					onclick={() => setServiceAreaTravelMode('walking')}
+				>
+					Walking
+				</calcite-segmented-control-item>
+			</calcite-segmented-control>
+		</calcite-label>
+		{#if isServiceAreaEnabled}
+			<calcite-notice open kind="info" icon>
+				<div slot="message">Click the map to set a facility and configure the request.</div>
+			</calcite-notice>
+		{/if}
 	</calcite-block>
 </calcite-panel>
