@@ -6,6 +6,7 @@ const DEFAULT_SITE_LOCATION_COORDINATES: [number, number] = [-79.88666527, 40.02
 const SERVICE_AREA_VIEWER_LAYER_ID = 'service-area-layer';
 const SITE_LOCATION_VIEWER_LAYER_ID = 'site-location-layer';
 const GEOCODE_RESULT_VIEWER_LAYER_ID = 'geocode-result-layer';
+const ROUTING_RESULT_VIEWER_LAYER_ID = 'routing-results-layer';
 
 export interface ContextualViewerLayer {
 	id: string;
@@ -53,12 +54,21 @@ export interface ElevationResultViewerLayer {
 	elevationFeet: number;
 }
 
+export interface RoutingResultViewerLayer {
+	id: string;
+	label: string;
+	kind: 'routing-result';
+	visible: boolean;
+	data: GeoJSONSourceSpecification['data'];
+}
+
 export type ViewerLayer =
 	| ContextualViewerLayer
 	| ServiceAreaViewerLayer
 	| SiteLocationViewerLayer
 	| GeocodeResultViewerLayer
-	| ElevationResultViewerLayer;
+	| ElevationResultViewerLayer
+	| RoutingResultViewerLayer;
 
 const createDefaultSiteLocationLayer = (): SiteLocationViewerLayer => ({
 	id: SITE_LOCATION_VIEWER_LAYER_ID,
@@ -172,6 +182,32 @@ export const addElevationResultViewerLayer = (result: {
 			}
 		];
 	});
+};
+
+export const upsertRoutingResultViewerLayer = (data: GeoJSONSourceSpecification['data']) => {
+	viewerLayers.update((layers) => {
+		const nextLayer: RoutingResultViewerLayer = {
+			id: ROUTING_RESULT_VIEWER_LAYER_ID,
+			label: 'Routing results layer',
+			kind: 'routing-result',
+			visible: true,
+			data
+		};
+		const existingLayerIndex = layers.findIndex((layer) => layer.id === ROUTING_RESULT_VIEWER_LAYER_ID);
+		if (existingLayerIndex === -1) {
+			return [...layers, nextLayer];
+		}
+
+		const nextLayers = [...layers];
+		nextLayers[existingLayerIndex] = nextLayer;
+		return nextLayers;
+	});
+};
+
+export const removeRoutingResultViewerLayer = () => {
+	viewerLayers.update((layers) =>
+		layers.filter((layer) => layer.id !== ROUTING_RESULT_VIEWER_LAYER_ID)
+	);
 };
 
 export const resetViewerLayers = () => {

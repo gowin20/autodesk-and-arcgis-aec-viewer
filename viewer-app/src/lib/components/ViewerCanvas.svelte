@@ -15,6 +15,7 @@
 		projectLayersVisible,
 		type ElevationResultViewerLayer,
 		type GeocodeResultViewerLayer,
+		type RoutingResultViewerLayer,
 		type SiteLocationViewerLayer,
 		upsertGeocodeResultViewerLayer,
 		upsertServiceAreaViewerLayer,
@@ -27,7 +28,8 @@
 		elevationQueryEnabled,
 		mapCenter,
 		routePlannerLocations,
-		routePlannerRouteGeoJson,
+		routePlannerMapPickedPoint,
+		routePlannerMapPickTargetId,
 		selectedSearchLocation,
 		serviceAreaEnabled
 	} from '$lib/state/location-services';
@@ -148,6 +150,7 @@
 					walking?: ServiceAreaParameters['travelMode'];
 				};
 				let isElevationQueryEnabled = false;
+				let activeRoutePlannerMapPickTargetId: string | null = null;
 				const contextualFeatureLayers = new Map<
 					string,
 					Awaited<ReturnType<typeof FeatureLayer.fromUrl>>
@@ -174,6 +177,8 @@
 					layer.kind === 'geocode-result';
 				const isElevationResultLayer = (layer: ViewerLayer): layer is ElevationResultViewerLayer =>
 					layer.kind === 'elevation-result';
+				const isRoutingResultLayer = (layer: ViewerLayer): layer is RoutingResultViewerLayer =>
+					layer.kind === 'routing-result';
 				const getContextualLayerEntry = (layerId: string) =>
 					activeViewerLayers.find(
 						(layer) => layer.kind === 'contextual' && layer.contextualLayerId === layerId
@@ -185,7 +190,6 @@
 					latitude: number;
 					label: string;
 				}> = [];
-				let activeRoutePlannerGeoJson: Record<string, unknown> | null = null;
 				const clamp = (value: number, min: number, max: number) =>
 					Math.min(Math.max(value, min), max);
 				const getElevationColorRatio = (elevationFeet: number): number => {
@@ -313,6 +317,13 @@
 						map.removeSource(ROUTE_PLANNER_SOURCE_ID);
 					}
 				};
+				const syncMapCursor = () => {
+					if (!map) return;
+					map.getCanvas().style.cursor =
+						isServiceAreaEnabled || isElevationQueryEnabled || Boolean(activeRoutePlannerMapPickTargetId)
+							? 'crosshair'
+							: '';
+				};
 				const syncRoutePlannerRender = () => {
 					if (!map) return;
 					const activeIds = new Set(activeRoutePlannerLocations.map((location) => location.id));
@@ -344,11 +355,6 @@
 						element.textContent = String(location.order);
 					}
 
-					if (activeRoutePlannerGeoJson) {
-						renderRoutePlannerLine(activeRoutePlannerGeoJson as GeoJSONSourceSpecification['data']);
-					} else {
-						removeRoutePlannerLine();
-					}
 				};
 				const syncMarkerViewerLayers = () => {
 					if (!map) return;
@@ -699,6 +705,12 @@
 					} else {
 						removeServiceAreaRender();
 					}
+					const routingResultLayer = activeViewerLayers.find(isRoutingResultLayer);
+					if (routingResultLayer && isProjectLayersVisible && routingResultLayer.visible) {
+						renderRoutePlannerLine(routingResultLayer.data);
+					} else {
+						removeRoutePlannerLine();
+					}
 					syncMarkerViewerLayers();
 					syncRoutePlannerRender();
 
@@ -718,7 +730,7 @@
 				});
 				const unsubscribeServiceAreaEnabled = serviceAreaEnabled.subscribe((enabled) => {
 					isServiceAreaEnabled = enabled;
-					if (map) map.getCanvas().style.cursor = enabled ? 'crosshair' : '';
+					syncMapCursor();
 					if (!enabled && !isElevationQueryEnabled) {
 						activeServiceAreaPopup?.remove();
 						activeServiceAreaPopup = undefined;
@@ -732,11 +744,15 @@
 				});
 				const unsubscribeElevationQueryEnabled = elevationQueryEnabled.subscribe((enabled) => {
 					isElevationQueryEnabled = enabled;
-					if (map) map.getCanvas().style.cursor = enabled ? 'crosshair' : '';
+					syncMapCursor();
 					if (!enabled && !isServiceAreaEnabled) {
 						activeServiceAreaPopup?.remove();
 						activeServiceAreaPopup = undefined;
 					}
+				});
+				const unsubscribeRoutePlannerMapPickTargetId = routePlannerMapPickTargetId.subscribe((targetId) => {
+					activeRoutePlannerMapPickTargetId = targetId;
+					syncMapCursor();
 				});
 				const unsubscribeSelectedSearchLocation = selectedSearchLocation.subscribe((location) => {
 					if (!location || !map) return;
@@ -755,10 +771,6 @@
 					activeRoutePlannerLocations = locations;
 					syncRoutePlannerRender();
 				});
-				const unsubscribeRoutePlannerRouteGeoJson = routePlannerRouteGeoJson.subscribe((geoJson) => {
-					activeRoutePlannerGeoJson = geoJson;
-					syncRoutePlannerRender();
-				});
 				const updateMapCenter = () => {
 					if (!map) return;
 					const center = map.getCenter();
@@ -775,6 +787,15 @@
 				}
 				syncViewerLayers();
 				map.on('click', (event) => {
+					if (activeRoutePlannerMapPickTargetId) {
+						routePlannerMapPickedPoint.set({
+							targetId: activeRoutePlannerMapPickTargetId,
+							longitude: event.lngLat.lng,
+							latitude: event.lngLat.lat
+						});
+						routePlannerMapPickTargetId.set(null);
+						return;
+					}
 					if (!isServiceAreaEnabled && !isElevationQueryEnabled) {
 						return;
 					}
@@ -818,7 +839,7 @@
 					unsubscribeElevationQueryEnabled();
 					unsubscribeSelectedSearchLocation();
 					unsubscribeRoutePlannerLocations();
-					unsubscribeRoutePlannerRouteGeoJson();
+					unsubscribeRoutePlannerMapPickTargetId();
 				});
 			} catch (error) {
 				mapError = getErrorMessage(error);

@@ -15,6 +15,12 @@ export interface RoutePlannerLocation {
 	label: string;
 }
 
+export interface RoutePlannerPickedPoint {
+	targetId: string;
+	longitude: number;
+	latitude: number;
+}
+
 export const serviceAreaEnabled = writable(false);
 export const enabledTravelModes = writable<EnabledTravelModes | null>(null);
 export const elevationQueryEnabled = writable(false);
@@ -22,4 +28,5 @@ export const geocodingQuery = writable('');
 export const mapCenter = writable({ lng: -79.88666527, lat: 40.022371938 });
 export const selectedSearchLocation = writable<ViewerLocation | null>(null);
 export const routePlannerLocations = writable<RoutePlannerLocation[]>([]);
-export const routePlannerRouteGeoJson = writable<Record<string, unknown> | null>(null);
+export const routePlannerMapPickTargetId = writable<string | null>(null);
+export const routePlannerMapPickedPoint = writable<RoutePlannerPickedPoint | null>(null);
