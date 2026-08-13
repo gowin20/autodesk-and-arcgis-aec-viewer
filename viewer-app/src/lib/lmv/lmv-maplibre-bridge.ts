@@ -323,6 +323,29 @@ export function createLmvBridge({
 		viewer.impl.getCanvasBoundingClientRect = () => mapCanvas.getBoundingClientRect();
 	}
 
+	// ── Repaint bursts for time-based LMV animations ────────────
+	// LMV's render loop is stopped; extensions that animate over time (e.g.
+	// the VisualClusters layout, ~5s on toggle) only advance when impl.tick()
+	// runs, which here only happens during a MapLibre frame. Feed repaints
+	// for the animation duration so the motion plays out.
+	let repaintBurstUntil = 0;
+	let repaintBurstScheduled = false;
+
+	function requestRepaintBurst(durationMs: number): void {
+		repaintBurstUntil = performance.now() + durationMs;
+		if (repaintBurstScheduled) return;
+		repaintBurstScheduled = true;
+		const step = () => {
+			if (performance.now() < repaintBurstUntil && map) {
+				map.triggerRepaint();
+				requestAnimationFrame(step);
+			} else {
+				repaintBurstScheduled = false;
+			}
+		};
+		requestAnimationFrame(step);
+	}
+
 	function patchLmvViewportToRay(): void {
 		// LMV's stock implementation uses camera.position and matrixWorld. This
 		// integration pins both to identity and puts the complete MapLibre view
@@ -382,10 +405,139 @@ export function createLmvBridge({
 		ready = false;
 		onStatus('Loading model...');
 		await loadLmvModel(viewer, urn);
+		await ensureVisualClustersExtension();
+		await ensureTransformExtension();
 		ready = true;
 
 		onStatus('Model loaded');
 		map?.triggerRepaint();
+	}
+
+	// Loaded once, after the first model is in. Adds the "Visual Clusters"
+	// toggle to the LMV toolbar; activation stays with the user.
+	let visualClustersRequested = false;
+	async function ensureVisualClustersExtension(): Promise<void> {
+		if (visualClustersRequested) return;
+		visualClustersRequested = true;
+		try {
+			const extension = await viewer.loadExtension('Autodesk.VisualClusters');
+			hookClusterAnimation(extension);
+		} catch (error) {
+			console.warn('[LMV] VisualClusters extension failed to load', error);
+		}
+	}
+
+	// The cluster layout animates over ~5s when toggled on/off. Wrap the
+	// extension's transition/activation entry points so each one feeds a
+	// repaint burst for the full animation. Clicks on the toolbar toggle
+	// funnel into setActive, so no DOM listener is needed.
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	function hookClusterAnimation(extension: any): void {
+		for (const fn of ['onTransitionStarted', 'setActive', 'setLayoutActive', 'applyLayout']) {
+			const original = extension[fn];
+			if (typeof original !== 'function') continue;
+			extension[fn] = function (...args: unknown[]) {
+				requestRepaintBurst(6000);
+				return original.apply(this, args);
+			};
+		}
+	}
+
+	// Loaded once, after the first model is in. Adds the "Transform Tools"
+	// (translate/rotate gizmos) to the LMV toolbar; activation stays with
+	// the user. Failures are logged, never fatal to model load.
+	let transformRequested = false;
+	async function ensureTransformExtension(): Promise<void> {
+		if (transformRequested) return;
+		transformRequested = true;
+		try {
+			const { registerTransformExtension, TRANSFORM_EXTENSION_ID } = await import(
+				'./transform-extension/transform-extension'
+			);
+			registerTransformExtension();
+			const extension = await viewer.loadExtension(TRANSFORM_EXTENSION_ID);
+			bindTransformToolForwarding(extension);
+		} catch (error) {
+			console.warn('[LMV] Transform extension failed to load', error);
+		}
+	}
+
+	// ── Left-button pointer forwarding while a transform tool is active ──
+	// MapLibre owns the left button (dragPan); the translate/rotate gizmos
+	// need left-button drags on viewer.canvas. While one of these tools is
+	// active, map panning is suspended and left-button mouse events on the
+	// map canvas container are re-dispatched to the (hidden) LMV canvas
+	// with coordinates preserved, each followed by a repaint.
+	let transformForwardingActive = false;
+	const TRANSFORM_FORWARDED_EVENTS = ['mousedown', 'mousemove', 'mouseup', 'click'] as const;
+
+	function forwardTransformPointerEvent(event: MouseEvent): void {
+		if (!viewer?.canvas) return;
+		// mousemove carries button 0 when idle; other types only for left button.
+		if (event.type !== 'mousemove' && event.button !== 0) return;
+
+		viewer.canvas.dispatchEvent(
+			new MouseEvent(event.type, {
+				bubbles: true,
+				cancelable: true,
+				button: event.button,
+				buttons: event.buttons,
+				clientX: event.clientX,
+				clientY: event.clientY,
+				screenX: event.screenX,
+				screenY: event.screenY
+			})
+		);
+		map?.triggerRepaint();
+	}
+
+	function setTransformForwarding(enabled: boolean): void {
+		if (enabled === transformForwardingActive || !map) return;
+		transformForwardingActive = enabled;
+
+		const eventSource = map.getCanvasContainer();
+
+		if (enabled) {
+			map.dragPan.disable();
+			map.doubleClickZoom.disable();
+			for (const type of TRANSFORM_FORWARDED_EVENTS) {
+				eventSource.addEventListener(type, forwardTransformPointerEvent);
+			}
+		} else {
+			for (const type of TRANSFORM_FORWARDED_EVENTS) {
+				eventSource.removeEventListener(type, forwardTransformPointerEvent);
+			}
+			map.dragPan.enable();
+			map.doubleClickZoom.enable();
+		}
+	}
+
+	// LMV 7's toolController emits no activation events, so wrap
+	// activateTool/deactivateTool and read the tools' `active` flags after
+	// each call (activation is synchronous in LMV; the microtask is cheap
+	// insurance in case that ever changes).
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	function bindTransformToolForwarding(extension: any): void {
+		const toolController = viewer?.toolController;
+		if (!toolController || toolController.__transformForwardingBound) return;
+		toolController.__transformForwardingBound = true;
+
+		const update = () =>
+			setTransformForwarding(
+				!!(extension?.translateTool?.active || extension?.rotateTool?.active)
+			);
+
+		for (const fn of ['activateTool', 'deactivateTool'] as const) {
+			const original = toolController[fn];
+			if (typeof original !== 'function') continue;
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			toolController[fn] = function (this: any, ...args: unknown[]) {
+				const result = original.apply(this, args);
+				update();
+				void Promise.resolve().then(update);
+				return result;
+			};
+		}
 	}
 
 	function resizeLmvToMapCanvas(): void {
