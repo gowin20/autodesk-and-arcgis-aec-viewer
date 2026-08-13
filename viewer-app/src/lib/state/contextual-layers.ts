@@ -1,5 +1,3 @@
-import { writable } from 'svelte/store';
-
 export const MAJOR_CITIES_LAYER_ID = 'usa-major-cities';
 export const FLOOD_HAZARD_AREAS_LAYER_ID = 'flood-hazard-areas';
 export const FAYETTE_COUNTY_PARCELS_LAYER_ID = 'fayette-county-parcels';
@@ -80,4 +78,7 @@ export const CONTEXTUAL_LAYER_OPTIONS = [
 	},
 ] as const;
 
-export const selectedContextualLayerIds = writable<string[]>([]);
+export type ContextualLayerOption = (typeof CONTEXTUAL_LAYER_OPTIONS)[number];
+export const CONTEXTUAL_LAYER_GROUPS = Array.from(
+	new Set(CONTEXTUAL_LAYER_OPTIONS.map((layer) => layer.group))
+);
