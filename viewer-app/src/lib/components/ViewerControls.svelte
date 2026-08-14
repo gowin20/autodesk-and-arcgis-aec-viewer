@@ -72,6 +72,8 @@
 				return 'Geocoding result marker';
 			case 'elevation-result':
 				return 'Elevation result marker';
+			case 'routing-result':
+				return 'Route result line';
 		}
 	};
 	const hasArcgisToken = arcgisToken.length > 0;

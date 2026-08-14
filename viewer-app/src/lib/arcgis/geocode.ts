@@ -50,7 +50,7 @@ export const getReverseGeocode = async (
 	console.log('Reverse geocode request: ', location);
 
 	const response = await reverseGeocode(location, getRequestOptions());
-	if (!response.address || !response.location) return null;
+	if (!response.address) return null;
 
 	return response;
 };

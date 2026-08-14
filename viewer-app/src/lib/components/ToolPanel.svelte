@@ -4,6 +4,7 @@
 	import {
 		findSuggestions,
 		getAddressCandidate,
+		getReverseGeocode,
 		type GeocodeSuggestion
 	} from '$lib/arcgis/geocode';
 	import {
@@ -12,16 +13,23 @@
 		type ServiceAreaTravelModeObject
 	} from '$lib/arcgis/routing';
 	import {
+		removeRoutingResultViewerLayer,
+		upsertRoutingResultViewerLayer
+	} from '$lib/state/layers';
+	import {
 		elevationQueryEnabled,
 		enabledTravelModes,
 		geocodingQuery,
 		mapCenter,
-		routePlannerLocations,
-		routePlannerRouteGeoJson,
 		selectedSearchLocation,
 		serviceAreaEnabled,
 		type ViewerLocation
 	} from '$lib/state/location-services';
+	import {
+		routePlannerLocations,
+		routePlannerMapPickedPoint,
+		routePlannerMapPickTargetId
+	} from '$lib/state/routing-stops';
 
 	const arcgisToken =
 		import.meta.env.VITE_ARCGIS_ACCESS_TOKEN?.trim() ??
@@ -76,6 +84,7 @@
 	let routeSummary = $state<RouteSummary | null>(null);
 	let routeDirectionSteps = $state<RouteDirectionStep[]>([]);
 	let showTurnByTurn = $state(false);
+	let activeRouteMapPickDestinationId = $state<string | null>(null);
 
 	const createRouteDestinationInput = (): RouteDestinationInput => ({
 		id: `route-stop-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -123,8 +132,56 @@
 		return `${Math.round(kilometers).toLocaleString()} km`;
 	};
 
-	const getNumber = (value: unknown): number | undefined =>
-		typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+	const formatCoordinateLabel = (longitude: number, latitude: number): string =>
+		`${latitude.toFixed(5)}, ${longitude.toFixed(5)}`;
+
+	const getNonEmptyString = (value: unknown): string | undefined =>
+		typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+
+	const getReverseGeocodeLabel = (response: unknown, longitude: number, latitude: number): string => {
+		const address = (response as { address?: Record<string, unknown> } | null)?.address;
+		if (!address || typeof address !== 'object') {
+			return formatCoordinateLabel(longitude, latitude);
+		}
+
+		const compositeAddress = [
+			getNonEmptyString(address.Address),
+			getNonEmptyString(address.City),
+			getNonEmptyString(address.Region),
+			getNonEmptyString(address.Postal),
+			getNonEmptyString(address.CountryCode)
+		]
+			.filter((part): part is string => Boolean(part))
+			.join(', ');
+
+		return (
+			getNonEmptyString(address.LongLabel) ??
+			getNonEmptyString(address.ShortLabel) ??
+			getNonEmptyString(address.Match_addr) ??
+			getNonEmptyString(address.MatchAddress) ??
+			getNonEmptyString(address.PlaceName) ??
+			getNonEmptyString(address.StAddr) ??
+			getNonEmptyString(address.address) ??
+			(compositeAddress.length > 0 ? compositeAddress : formatCoordinateLabel(longitude, latitude))
+		);
+	};
+
+	const clearRouteSolveResults = () => {
+		removeRoutingResultViewerLayer();
+		routeSummary = null;
+		routeDirectionSteps = [];
+		showTurnByTurn = false;
+		routeSolveError = null;
+	};
+
+	const getNumber = (value: unknown): number | undefined => {
+		if (typeof value === 'number' && Number.isFinite(value)) return value;
+		if (typeof value === 'string') {
+			const parsed = Number(value);
+			if (Number.isFinite(parsed)) return parsed;
+		}
+		return undefined;
+	};
 
 	const extractRouteResults = (response: unknown): {
 		summary: RouteSummary | null;
@@ -138,25 +195,40 @@
 		const firstRouteResult = routeResults[0] ?? {};
 		const routeObject = (firstRouteResult.route as Record<string, unknown> | undefined) ?? {};
 		const routeAttributes = (routeObject.attributes as Record<string, unknown> | undefined) ?? {};
+		const routeFeatureSet = raw.routes as Record<string, unknown> | undefined;
+		const routeFeatures = Array.isArray(routeFeatureSet?.features)
+			? (routeFeatureSet.features as Array<Record<string, unknown>>)
+			: [];
+		const routeFeatureAttributes =
+			(routeFeatures[0]?.attributes as Record<string, unknown> | undefined) ?? {};
 		const distanceKilometers =
 			getNumber(routeAttributes.Total_Kilometers) ??
+			getNumber(routeFeatureAttributes.Total_Kilometers) ??
 			getNumber(routeAttributes.Kilometers) ??
+			getNumber(routeFeatureAttributes.Kilometers) ??
+			getNumber(routeFeatureAttributes.Total_Length) ??
 			getNumber(routeAttributes.Shape_Length);
 		const durationMinutes =
-			getNumber(routeAttributes.Total_TravelTime) ?? getNumber(routeAttributes.Total_Minutes);
-		const summary =
-			typeof distanceKilometers === 'number' || typeof durationMinutes === 'number'
-				? {
-						distanceText: formatDistance(distanceKilometers),
-						durationText: formatDuration(durationMinutes),
-						label: `${formatDuration(durationMinutes)} (${formatDistance(distanceKilometers)})`,
-						subLabel: 'Route directions'
-					}
-				: null;
+			getNumber(routeAttributes.Total_TravelTime) ??
+			getNumber(routeFeatureAttributes.Total_TravelTime) ??
+			getNumber(routeAttributes.Total_Minutes) ??
+			getNumber(routeFeatureAttributes.Total_Minutes) ??
+			getNumber(routeFeatureAttributes.Total_Time);
 
 		const rawDirections = firstRouteResult.directions as Record<string, unknown> | undefined;
-		const directionFeatures = Array.isArray(rawDirections?.features)
-			? (rawDirections.features as Array<Record<string, unknown>>)
+		const directionsArray = Array.isArray(raw.directions)
+			? (raw.directions as Array<Record<string, unknown>>)
+			: [];
+		const directionsFromArray =
+			directionsArray.find((entry) => Array.isArray(entry.features)) ?? directionsArray[0];
+		const directionContainer =
+			rawDirections && Array.isArray(rawDirections.features)
+				? rawDirections
+				: directionsFromArray && Array.isArray(directionsFromArray.features)
+					? directionsFromArray
+					: undefined;
+		const directionFeatures = Array.isArray(directionContainer?.features)
+			? (directionContainer.features as Array<Record<string, unknown>>)
 			: [];
 		const steps = directionFeatures
 			.map((feature, index) => {
@@ -167,15 +239,55 @@
 					id: `direction-${index}`,
 					text,
 					distanceText: formatDistance(
-						getNumber(attributes.length) ?? getNumber(attributes.length_km)
+						getNumber(attributes.length) ??
+							getNumber(attributes.length_km) ??
+							getNumber(attributes.length_m)
 					),
-					timeText: formatDuration(getNumber(attributes.time))
+					timeText: formatDuration(getNumber(attributes.time) ?? getNumber(attributes.minutes))
 				};
 			})
 			.filter((step): step is RouteDirectionStep => Boolean(step));
 
-		const routeFeatureSet = raw.routes as Record<string, unknown> | undefined;
+		const fallbackDistanceKilometers =
+			steps.length > 0
+				? directionFeatures.reduce((total, feature) => {
+						const attributes = (feature.attributes as Record<string, unknown> | undefined) ?? {};
+						return (
+							total +
+							(getNumber(attributes.length_km) ??
+								getNumber(attributes.length) ??
+								getNumber(attributes.length_m) ??
+								0)
+						);
+					}, 0)
+				: undefined;
+		const fallbackDurationMinutes =
+			steps.length > 0
+				? directionFeatures.reduce((total, feature) => {
+						const attributes = (feature.attributes as Record<string, unknown> | undefined) ?? {};
+						return total + (getNumber(attributes.time) ?? getNumber(attributes.minutes) ?? 0);
+					}, 0)
+				: undefined;
+		const resolvedDistanceKilometers = distanceKilometers ?? fallbackDistanceKilometers;
+		const resolvedDurationMinutes = durationMinutes ?? fallbackDurationMinutes;
+
+		const summary =
+			typeof resolvedDistanceKilometers === 'number' || typeof resolvedDurationMinutes === 'number'
+				? {
+						distanceText: formatDistance(resolvedDistanceKilometers),
+						durationText: formatDuration(resolvedDurationMinutes),
+						label: `${formatDuration(resolvedDurationMinutes)} (${formatDistance(resolvedDistanceKilometers)})`,
+						subLabel: 'Route directions'
+					}
+				: null;
 		const geoJson = (routeFeatureSet?.geoJson as Record<string, unknown> | undefined) ?? null;
+
+		console.log('[Route directions] Parsed result', {
+			hasSummary: Boolean(summary),
+			stepCount: steps.length,
+			distanceKilometers: resolvedDistanceKilometers,
+			durationMinutes: resolvedDurationMinutes
+		});
 
 		return { summary, steps, geoJson };
 	};
@@ -205,6 +317,80 @@
 					(typeof modes?.driving?.name === 'string' && modes.driving.name) ||
 					(typeof availableRouteTravelModes[0]?.name === 'string' ? availableRouteTravelModes[0].name : '');
 			}
+		});
+		const unsubscribeRoutePlannerMapPickedPoint = routePlannerMapPickedPoint.subscribe((pickedPoint) => {
+			if (!pickedPoint) {
+				return;
+			}
+
+			const destination = routeDestinationInputs.find((entry) => entry.id === pickedPoint.targetId);
+			if (!destination) {
+				routePlannerMapPickTargetId.set(null);
+				routePlannerMapPickedPoint.set(null);
+				activeRouteMapPickDestinationId = null;
+				return;
+			}
+
+			const coordinateLabel = formatCoordinateLabel(pickedPoint.longitude, pickedPoint.latitude);
+			updateRouteDestinationInput(pickedPoint.targetId, (entry) => ({
+				...entry,
+				query: coordinateLabel,
+				isSearching: true,
+				error: null,
+				suggestions: [],
+				selectedLocation: {
+					longitude: pickedPoint.longitude,
+					latitude: pickedPoint.latitude,
+					label: coordinateLabel
+				}
+			}));
+			syncRoutePlannerLocations();
+			clearRouteSolveResults();
+
+			void getReverseGeocode({
+				x: pickedPoint.longitude,
+				y: pickedPoint.latitude,
+				spatialReference: { wkid: 4326 }
+			})
+				.then((response) => {
+					const label = getReverseGeocodeLabel(
+						response,
+						pickedPoint.longitude,
+						pickedPoint.latitude
+					);
+					updateRouteDestinationInput(pickedPoint.targetId, (entry) => ({
+						...entry,
+						query: label,
+						isSearching: false,
+						error: null,
+						selectedLocation: {
+							longitude: pickedPoint.longitude,
+							latitude: pickedPoint.latitude,
+							label
+						}
+					}));
+					syncRoutePlannerLocations();
+				})
+				.catch((error: unknown) => {
+					const fallbackLabel = formatCoordinateLabel(pickedPoint.longitude, pickedPoint.latitude);
+					updateRouteDestinationInput(pickedPoint.targetId, (entry) => ({
+						...entry,
+						query: fallbackLabel,
+						isSearching: false,
+						error: error instanceof Error ? error.message : 'Reverse geocode failed.',
+						selectedLocation: {
+							longitude: pickedPoint.longitude,
+							latitude: pickedPoint.latitude,
+							label: fallbackLabel
+						}
+					}));
+					syncRoutePlannerLocations();
+				})
+				.finally(() => {
+					routePlannerMapPickTargetId.set(null);
+					routePlannerMapPickedPoint.set(null);
+					activeRouteMapPickDestinationId = null;
+				});
 		});
 
 		void (async () => {
@@ -245,6 +431,7 @@
 			unsubscribeElevationQueryEnabled();
 			unsubscribeGeocodingQuery();
 			unsubscribeEnabledTravelModes();
+			unsubscribeRoutePlannerMapPickedPoint();
 		};
 	});
 
@@ -339,6 +526,7 @@
 
 		const destination = routeDestinationInputs.find((entry) => entry.id === destinationId);
 		if (!destination) return;
+		if (query === destination.query) return;
 
 		if (destination.timer) clearTimeout(destination.timer);
 		const requestId = destination.requestId + 1;
@@ -352,10 +540,7 @@
 			isSearching: query.length >= 3
 		}));
 		syncRoutePlannerLocations();
-		routePlannerRouteGeoJson.set(null);
-		routeSummary = null;
-		routeDirectionSteps = [];
-		showTurnByTurn = false;
+		clearRouteSolveResults();
 
 		if (query.length < 3) {
 			return;
@@ -390,51 +575,33 @@
 		}));
 	};
 
-	const searchRouteDestination = async (destinationId: string) => {
-		const destination = routeDestinationInputs.find((entry) => entry.id === destinationId);
-		if (!destination) return;
-		const query = destination.query.trim();
-		if (!query) {
-			updateRouteDestinationInput(destinationId, (entry) => ({
-				...entry,
-				error: 'Enter a destination before searching.'
-			}));
+	const chooseRouteDestinationOnMap = (destinationId: string) => {
+		if (!hasArcgisToken) {
 			return;
 		}
-
-		updateRouteDestinationInput(destinationId, (entry) => ({
-			...entry,
-			isSearching: true,
-			error: null
-		}));
-		try {
-			const topSuggestion = destination.suggestions[0];
-			const candidate = await getAddressCandidate(
-				topSuggestion?.text ?? query,
-				topSuggestion?.magicKey ?? null
-			);
-			if (!candidate) {
-				throw new Error('No matching location was found.');
-			}
-			updateRouteDestinationInput(destinationId, (entry) => ({
+		if (activeRouteMapPickDestinationId === destinationId) {
+			activeRouteMapPickDestinationId = null;
+			routePlannerMapPickTargetId.set(null);
+			routePlannerMapPickedPoint.set(null);
+			return;
+		}
+		activeRouteMapPickDestinationId = destinationId;
+		updateRouteDestinationInput(destinationId, (entry) => {
+			if (entry.timer) clearTimeout(entry.timer);
+			return {
 				...entry,
-				query: candidate.address,
+				requestId: entry.requestId + 1,
+				timer: null,
 				suggestions: [],
 				isSearching: false,
-				selectedLocation: {
-					longitude: candidate.location.x,
-					latitude: candidate.location.y,
-					label: candidate.address
-				}
-			}));
-			syncRoutePlannerLocations();
-		} catch (error: unknown) {
-			updateRouteDestinationInput(destinationId, (entry) => ({
-				...entry,
-				isSearching: false,
-				error: error instanceof Error ? error.message : 'Address search failed.'
-			}));
-		}
+				error: null
+			};
+		});
+		clearRouteSolveResults();
+		serviceAreaEnabled.set(false);
+		elevationQueryEnabled.set(false);
+		routePlannerMapPickedPoint.set(null);
+		routePlannerMapPickTargetId.set(destinationId);
 	};
 
 	const selectRouteDestinationSuggestion = async (
@@ -463,6 +630,7 @@
 				}
 			}));
 			syncRoutePlannerLocations();
+			clearRouteSolveResults();
 		} catch (error: unknown) {
 			updateRouteDestinationInput(destinationId, (entry) => ({
 				...entry,
@@ -474,6 +642,7 @@
 
 	const addRouteStop = () => {
 		routeDestinationInputs = [...routeDestinationInputs, createRouteDestinationInput()];
+		clearRouteSolveResults();
 	};
 
 	const removeRouteStop = (destinationId: string) => {
@@ -484,6 +653,7 @@
 		if (destination?.timer) clearTimeout(destination.timer);
 		routeDestinationInputs = routeDestinationInputs.filter((entry) => entry.id !== destinationId);
 		syncRoutePlannerLocations();
+		clearRouteSolveResults();
 	};
 
 	const onRouteStopsOrderChange = (event: Event) => {
@@ -515,15 +685,16 @@
 		nextInputs.splice(toIndex, 0, movedStop);
 		routeDestinationInputs = nextInputs;
 		syncRoutePlannerLocations();
+		clearRouteSolveResults();
 	};
 
 	const toggleDirectionsPlanner = () => {
 		showDirectionsPlanner = !showDirectionsPlanner;
 		if (!showDirectionsPlanner) {
-			routePlannerRouteGeoJson.set(null);
-			routeSummary = null;
-			routeDirectionSteps = [];
-			showTurnByTurn = false;
+			routePlannerMapPickTargetId.set(null);
+			routePlannerMapPickedPoint.set(null);
+			activeRouteMapPickDestinationId = null;
+			clearRouteSolveResults();
 		}
 	};
 
@@ -558,11 +729,15 @@
 				routeSummary = summary;
 				routeDirectionSteps = steps;
 				showTurnByTurn = false;
-				routePlannerRouteGeoJson.set(geoJson);
+				if (geoJson) {
+					upsertRoutingResultViewerLayer(geoJson);
+				} else {
+					removeRoutingResultViewerLayer();
+				}
 			})
 			.catch((error: unknown) => {
 				routeSolveError = error instanceof Error ? error.message : 'Route calculation failed.';
-				routePlannerRouteGeoJson.set(null);
+				removeRoutingResultViewerLayer();
 			})
 			.finally(() => {
 				isSolvingRoute = false;
@@ -574,8 +749,10 @@
 		for (const destination of routeDestinationInputs) {
 			if (destination.timer) clearTimeout(destination.timer);
 		}
+		routePlannerMapPickTargetId.set(null);
+		routePlannerMapPickedPoint.set(null);
 		routePlannerLocations.set([]);
-		routePlannerRouteGeoJson.set(null);
+		removeRoutingResultViewerLayer();
 	});
 </script>
 
@@ -662,156 +839,174 @@
 						Calculate directions
 					</calcite-button>
 					{#if showDirectionsPlanner}
-						<calcite-block class="tool-subpanel" heading="Directions" description="Route solver" open>
-							<calcite-list
-								class="route-stops-list"
-								drag-enabled
-								display-mode="flat"
-								selection-mode="none"
-								oncalciteListOrderChange={onRouteStopsOrderChange}
-								label="Destinations"
-							>
-								{#each routeDestinationInputs as destination, index (destination.id)}
-									<calcite-list-item
-										drag-handle
-										sort-handle-open
-										display-mode="flat"
-										scale="s"
-										selection-mode="none"
-										selection-appearance="icon"
-										interaction-mode="interactive"
-										value={destination.id}
-										label={`Stop ${index + 1}`}
-										description={destination.selectedLocation ? destination.selectedLocation.label : 'No destination selected'}
-									>
-										<div class="route-stop-item" slot="content">
-											<div class="route-stop-search">
-												<calcite-autocomplete
-													class="route-stop-autocomplete"
-													input-value={destination.query}
-													label="Find address or place"
-													placeholder="Find address or place"
-													icon="search"
-													clearable
-													loading={destination.isSearching}
-													open={destination.suggestions.length > 0}
-													oncalciteAutocompleteTextInput={(event) =>
-														onRouteDestinationAutocompleteInput(destination.id, event)}
-												>
-													{#each destination.suggestions as suggestion (suggestion.magicKey)}
-														<calcite-autocomplete-item
-															heading={suggestion.text}
-															value={suggestion.magicKey}
-															icon-start="pin"
-															oncalciteAutocompleteItemSelect={() =>
-																selectRouteDestinationSuggestion(destination.id, suggestion)}
-														></calcite-autocomplete-item>
-													{/each}
-												</calcite-autocomplete>
-												<calcite-button
-													class="route-stop-search-button"
-													appearance="transparent"
-													kind="neutral"
-													icon-start="search"
-													loading={destination.isSearching}
-													onclick={() => searchRouteDestination(destination.id)}
-												></calcite-button>
-											</div>
-										</div>
-										{#if destination.error}
-											<calcite-notice open kind="danger" icon>
-												<div slot="message">{destination.error}</div>
-											</calcite-notice>
-										{/if}
-										{#if routeDestinationInputs.length > 2}
-											<calcite-action
-												slot="actions-end"
-												icon="trash"
-												text="Delete stop"
-												onclick={() => removeRouteStop(destination.id)}
-											></calcite-action>
-										{/if}
-									</calcite-list-item>
-								{/each}
-							</calcite-list>
-
-							<calcite-button class="add-stop-action" width="full" appearance="outline" icon-start="plus" onclick={addRouteStop}>
-								Add stop
-							</calcite-button>
-
-							<calcite-label>
-								Travel mode
-								<calcite-select
-									value={selectedRouteTravelModeName}
-									oncalciteSelectChange={(event) => {
-										selectedRouteTravelModeName = (event.target as { value?: string }).value ?? '';
-									}}
+						<div class="tool-subpanel">
+							<calcite-flow>
+								<calcite-flow-item
+									heading="Directions"
+									description="Route solver"
+									selected={!showTurnByTurn}
 								>
-									{#each availableRouteTravelModes as mode}
-										{#if typeof mode.name === 'string'}
-											<calcite-option value={mode.name}>{mode.name}</calcite-option>
-										{/if}
-									{/each}
-								</calcite-select>
-							</calcite-label>
-
-							<calcite-label layout="inline-space-between">
-								Optimize route
-								<calcite-switch
-									checked={optimizeRoute}
-									oncalciteSwitchChange={(event) =>
-										(optimizeRoute = Boolean((event.target as { checked?: boolean }).checked))}
-								></calcite-switch>
-							</calcite-label>
-
-							<calcite-button width="full" loading={isSolvingRoute} disabled={isSolvingRoute} onclick={solveRouteDirections}>
-								Solve route
-							</calcite-button>
-							{#if routeSolveError}
-								<calcite-notice open kind="danger" icon>
-									<div slot="message">{routeSolveError}</div>
-								</calcite-notice>
-							{/if}
-
-							{#if !routeSummary}
-								<calcite-notice open kind="info" icon>
-									<div slot="message">No route results yet. Add stops and click Solve route.</div>
-								</calcite-notice>
-							{:else}
-								<calcite-flow>
-									<calcite-flow-item heading="Route result">
-										<calcite-list>
+									<calcite-list
+										class="route-stops-list"
+										drag-enabled
+										display-mode="flat"
+										selection-mode="none"
+										oncalciteListOrderChange={onRouteStopsOrderChange}
+										label="Destinations"
+									>
+										{#each routeDestinationInputs as destination, index (destination.id)}
 											<calcite-list-item
-												label={routeSummary.label}
-												description={routeSummary.subLabel}
-												onclick={() => (showTurnByTurn = true)}
-											></calcite-list-item>
-										</calcite-list>
-									</calcite-flow-item>
-									{#if showTurnByTurn}
-										<calcite-flow-item
-											heading="Turn-by-turn directions"
-											oncalciteFlowItemBack={() => (showTurnByTurn = false)}
-										>
-											{#if routeDirectionSteps.length === 0}
-												<calcite-notice open kind="info" icon>
-													<div slot="message">No turn-by-turn directions were returned.</div>
-												</calcite-notice>
-											{:else}
-												<calcite-list>
-													{#each routeDirectionSteps as step}
-														<calcite-list-item
-															label={step.text}
-															description={`${step.distanceText} • ${step.timeText}`}
-														></calcite-list-item>
-													{/each}
-												</calcite-list>
-											{/if}
-										</calcite-flow-item>
+												drag-handle
+												sort-handle-open
+												display-mode="flat"
+												scale="s"
+												selection-mode="none"
+												selection-appearance="icon"
+												interaction-mode="interactive"
+												value={destination.id}
+												label={`Stop ${index + 1}`}
+												description={destination.selectedLocation ? destination.selectedLocation.label : 'No destination selected'}
+											>
+												<div class="route-stop-item" slot="content">
+													<div class="route-stop-search">
+														<calcite-autocomplete
+															class="route-stop-autocomplete"
+															input-value={destination.query}
+															label="Find address or place"
+															placeholder="Find address or place"
+															icon="search"
+															clearable
+															loading={destination.isSearching}
+															open={destination.suggestions.length > 0}
+															oncalciteAutocompleteTextInput={(event) =>
+																onRouteDestinationAutocompleteInput(destination.id, event)}
+														>
+															{#each destination.suggestions as suggestion (suggestion.magicKey)}
+																<calcite-autocomplete-item
+																	heading={suggestion.text}
+																	value={suggestion.magicKey}
+																	icon-start="pin"
+																	oncalciteAutocompleteItemSelect={() =>
+																		selectRouteDestinationSuggestion(destination.id, suggestion)}
+																></calcite-autocomplete-item>
+															{/each}
+														</calcite-autocomplete>
+														<calcite-button
+															class="route-stop-search-button"
+															appearance={activeRouteMapPickDestinationId === destination.id
+																? 'solid'
+																: 'transparent'}
+															kind="neutral"
+															scale="s"
+															icon-start="crosshair"
+															title="Choose a location"
+															aria-label="Choose a location"
+															loading={destination.isSearching}
+															onclick={() => chooseRouteDestinationOnMap(destination.id)}
+														></calcite-button>
+													</div>
+												</div>
+												{#if destination.error}
+													<calcite-notice open kind="danger" icon>
+														<div slot="message">{destination.error}</div>
+													</calcite-notice>
+												{/if}
+												{#if routeDestinationInputs.length > 2}
+													<calcite-action
+														slot="actions-end"
+														icon="trash"
+														text="Delete stop"
+														onclick={() => removeRouteStop(destination.id)}
+													></calcite-action>
+												{/if}
+											</calcite-list-item>
+										{/each}
+									</calcite-list>
+									{#if activeRouteMapPickDestinationId}
+										<calcite-notice open kind="info" icon>
+											<div slot="message">Click the map to choose a location for this stop.</div>
+										</calcite-notice>
 									{/if}
-								</calcite-flow>
-							{/if}
-						</calcite-block>
+
+									<calcite-button class="add-stop-action" width="full" appearance="outline" icon-start="plus" onclick={addRouteStop}>
+										Add stop
+									</calcite-button>
+
+									<calcite-label>
+										Travel mode
+										<calcite-select
+											value={selectedRouteTravelModeName}
+											oncalciteSelectChange={(event) => {
+												selectedRouteTravelModeName = (event.target as { value?: string }).value ?? '';
+											}}
+										>
+											{#each availableRouteTravelModes as mode}
+												{#if typeof mode.name === 'string'}
+													<calcite-option value={mode.name}>{mode.name}</calcite-option>
+												{/if}
+											{/each}
+										</calcite-select>
+									</calcite-label>
+
+									<calcite-label layout="inline-space-between">
+										Optimize route
+										<calcite-switch
+											checked={optimizeRoute}
+											oncalciteSwitchChange={(event) =>
+												(optimizeRoute = Boolean((event.target as { checked?: boolean }).checked))}
+										></calcite-switch>
+									</calcite-label>
+
+									<calcite-button width="full" loading={isSolvingRoute} disabled={isSolvingRoute} onclick={solveRouteDirections}>
+										Solve route
+									</calcite-button>
+									{#if routeSummary}
+										<button
+											type="button"
+											class="route-result-preview-button"
+											onclick={() => (showTurnByTurn = true)}
+										>
+											<div class="route-result-preview-content">
+												<span class="route-result-preview-label">{routeSummary.label}</span>
+												<span class="route-result-preview-description">{routeSummary.subLabel}</span>
+											</div>
+											<calcite-icon icon="chevron-right" scale="s"></calcite-icon>
+										</button>
+									{:else}
+										<calcite-notice open kind="info" icon>
+											<div slot="message">No route results yet. Add stops and click Solve route.</div>
+										</calcite-notice>
+									{/if}
+									{#if routeSolveError}
+										<calcite-notice open kind="danger" icon>
+											<div slot="message">{routeSolveError}</div>
+										</calcite-notice>
+									{/if}
+								</calcite-flow-item>
+								<calcite-flow-item
+									heading="Turn-by-turn directions"
+									description={routeSummary?.label}
+									selected={showTurnByTurn}
+									oncalciteFlowItemBack={() => (showTurnByTurn = false)}
+								>
+									{#if routeDirectionSteps.length === 0}
+										<calcite-notice open kind="info" icon>
+											<div slot="message">No turn-by-turn directions were returned.</div>
+										</calcite-notice>
+									{:else}
+										{#each routeDirectionSteps as step, index (step.id)}
+											<calcite-block
+												heading={`Step ${index + 1}`}
+												description={`${step.distanceText} • ${step.timeText}`}
+												open
+											>
+												<p class="route-direction-step-text">{step.text}</p>
+											</calcite-block>
+										{/each}
+									{/if}
+								</calcite-flow-item>
+							</calcite-flow>
+						</div>
 					{/if}
 					{#if isServiceAreaEnabled}
 						<calcite-notice open kind="info" icon>
@@ -858,5 +1053,42 @@
 
 	.route-stop-search-button {
 		align-self: end;
+	}
+
+	.route-result-preview-button {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.75rem;
+		width: 100%;
+		margin-top: 0.75rem;
+		padding: 0.75rem;
+		border: 1px solid var(--calcite-color-border-2);
+		border-radius: 0.5rem;
+		background: var(--calcite-color-foreground-1);
+		color: var(--calcite-color-text-1);
+		text-align: left;
+		cursor: pointer;
+	}
+
+	.route-result-preview-content {
+		display: flex;
+		flex-direction: column;
+		gap: 0.15rem;
+	}
+
+	.route-result-preview-label {
+		font-size: var(--calcite-font-size--1);
+		font-weight: var(--calcite-font-weight-medium);
+	}
+
+	.route-result-preview-description {
+		font-size: var(--calcite-font-size--2);
+		color: var(--calcite-color-text-2);
+	}
+
+	.route-direction-step-text {
+		margin: 0;
+		color: var(--calcite-color-text-1);
 	}
 </style>
