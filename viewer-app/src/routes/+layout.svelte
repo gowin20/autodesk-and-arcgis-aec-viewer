@@ -3,9 +3,11 @@
 	import { base } from '$app/paths';
 	import { setAssetPath } from '@esri/calcite-components';
 	import favicon from '$lib/assets/favicon.svg';
+	import { APP_COLOR_MODE, applyColorMode } from '$lib/config/theme';
 	import '../app.css';
 
 	if (browser) {
+		applyColorMode(APP_COLOR_MODE);
 		setAssetPath(`${base}/calcite/`);
 	}
 

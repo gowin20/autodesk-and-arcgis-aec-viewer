@@ -21,13 +21,15 @@
 		enabledTravelModes,
 		geocodingQuery,
 		mapCenter,
-		routePlannerLocations,
-		routePlannerMapPickedPoint,
-		routePlannerMapPickTargetId,
 		selectedSearchLocation,
 		serviceAreaEnabled,
 		type ViewerLocation
 	} from '$lib/state/location-services';
+	import {
+		routePlannerLocations,
+		routePlannerMapPickedPoint,
+		routePlannerMapPickTargetId
+	} from '$lib/state/routing-stops';
 
 	const arcgisToken =
 		import.meta.env.VITE_ARCGIS_ACCESS_TOKEN?.trim() ??
@@ -154,8 +156,11 @@
 
 		return (
 			getNonEmptyString(address.LongLabel) ??
+			getNonEmptyString(address.ShortLabel) ??
 			getNonEmptyString(address.Match_addr) ??
 			getNonEmptyString(address.MatchAddress) ??
+			getNonEmptyString(address.PlaceName) ??
+			getNonEmptyString(address.StAddr) ??
 			getNonEmptyString(address.address) ??
 			(compositeAddress.length > 0 ? compositeAddress : formatCoordinateLabel(longitude, latitude))
 		);
@@ -342,7 +347,11 @@
 			syncRoutePlannerLocations();
 			clearRouteSolveResults();
 
-			void getReverseGeocode([pickedPoint.longitude, pickedPoint.latitude])
+			void getReverseGeocode({
+				x: pickedPoint.longitude,
+				y: pickedPoint.latitude,
+				spatialReference: { wkid: 4326 }
+			})
 				.then((response) => {
 					const label = getReverseGeocodeLabel(
 						response,
@@ -517,6 +526,7 @@
 
 		const destination = routeDestinationInputs.find((entry) => entry.id === destinationId);
 		if (!destination) return;
+		if (query === destination.query) return;
 
 		if (destination.timer) clearTimeout(destination.timer);
 		const requestId = destination.requestId + 1;

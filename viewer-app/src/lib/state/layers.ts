@@ -205,9 +205,13 @@ export const upsertRoutingResultViewerLayer = (data: GeoJSONSourceSpecification[
 };
 
 export const removeRoutingResultViewerLayer = () => {
-	viewerLayers.update((layers) =>
-		layers.filter((layer) => layer.id !== ROUTING_RESULT_VIEWER_LAYER_ID)
-	);
+	viewerLayers.update((layers) => {
+		const hasRoutingResultLayer = layers.some((layer) => layer.id === ROUTING_RESULT_VIEWER_LAYER_ID);
+		if (!hasRoutingResultLayer) {
+			return layers;
+		}
+		return layers.filter((layer) => layer.id !== ROUTING_RESULT_VIEWER_LAYER_ID);
+	});
 };
 
 export const resetViewerLayers = () => {

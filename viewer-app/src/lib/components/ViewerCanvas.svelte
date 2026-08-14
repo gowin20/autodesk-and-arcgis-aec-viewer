@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { get } from 'svelte/store';
 	import type {
 		ErrorEvent,
 		GeoJSONSource,
@@ -8,7 +9,11 @@
 	} from 'maplibre-gl';
 	import { getElevationAtLocation } from '$lib/arcgis/elevation';
 	import { fetchServiceArea, type ServiceAreaParameters } from '$lib/arcgis/routing';
-	import { DEFAULT_BASEMAP_STYLE, selectedBasemapStyle } from '$lib/state/basemap-style';
+	import {
+		activeBasemapStyle,
+		satelliteBasemapEnabled,
+		toggleSatelliteBasemap
+	} from '$lib/state/basemap-style';
 	import { CONTEXTUAL_LAYER_OPTIONS } from '$lib/state/contextual-layers';
 	import {
 		addElevationResultViewerLayer,
@@ -27,12 +32,14 @@
 		enabledTravelModes,
 		elevationQueryEnabled,
 		mapCenter,
-		routePlannerLocations,
-		routePlannerMapPickedPoint,
-		routePlannerMapPickTargetId,
 		selectedSearchLocation,
 		serviceAreaEnabled
 	} from '$lib/state/location-services';
+	import {
+		routePlannerLocations,
+		routePlannerMapPickedPoint,
+		routePlannerMapPickTargetId
+	} from '$lib/state/routing-stops';
 	import { createLmvBridge, createMercatorModelPlacement } from '$lib/lmv/lmv-maplibre-bridge';
 	import 'maplibre-gl/dist/maplibre-gl.css';
 
@@ -47,6 +54,7 @@
 	let map: MaplibreMap | undefined;
 	let mapError = $state<string | null>(null);
 	let lmvStatus = $state<string | null>(null);
+	let isSatelliteBasemapActive = $state(false);
 
 	// Office.rvt on the APS sample server, geo-pinned at Brownsville, PA.
 	const DEFAULT_LMV_URN =
@@ -55,6 +63,12 @@
 
 	const getErrorMessage = (error: unknown): string =>
 		error instanceof Error ? error.message : 'Map failed to load.';
+	const toggleBasemapOverlay = () => {
+		if (!hasArcgisToken) {
+			return;
+		}
+		toggleSatelliteBasemap();
+	};
 
 	onMount(() => {
 		if (!mapContainer) {
@@ -130,7 +144,7 @@
 
 				const basemapStyle = hasArcgisToken
 					? BasemapStyle.applyStyle(map, {
-							style: DEFAULT_BASEMAP_STYLE,
+							style: get(activeBasemapStyle),
 							token: arcgisToken,
 							preferences: {
 								language: 'en',
@@ -138,7 +152,7 @@
 							}
 						})
 					: undefined;
-				let activeStyleId = DEFAULT_BASEMAP_STYLE;
+				let activeStyleId = get(activeBasemapStyle);
 				let activeViewerLayers: ViewerLayer[] = [];
 				let isProjectLayersVisible = true;
 				let isServiceAreaEnabled = false;
@@ -339,6 +353,17 @@
 						if (!marker) {
 							const markerElement = document.createElement('div');
 							markerElement.className = 'route-stop-marker';
+							markerElement.style.display = 'grid';
+							markerElement.style.placeItems = 'center';
+							markerElement.style.width = '1.1rem';
+							markerElement.style.height = '1.1rem';
+							markerElement.style.border = '2px solid #ffffff';
+							markerElement.style.borderRadius = '9999px';
+							markerElement.style.background = '#0ea5e9';
+							markerElement.style.color = '#ffffff';
+							markerElement.style.fontSize = '0.65rem';
+							markerElement.style.fontWeight = '700';
+							markerElement.style.boxShadow = '0 1px 4px rgb(0 0 0 / 35%)';
 							markerElement.textContent = String(location.order);
 							marker = new maplibregl.Marker({
 								element: markerElement,
@@ -350,6 +375,7 @@
 							routePlannerMarkers.set(location.id, marker);
 						} else {
 							marker.setLngLat([location.longitude, location.latitude]);
+							marker.setPopup(new maplibregl.Popup().setText(location.label));
 						}
 						const element = marker.getElement();
 						element.textContent = String(location.order);
@@ -624,7 +650,10 @@
 					});
 				};
 
-				const unsubscribeSelectedBasemapStyle = selectedBasemapStyle.subscribe((styleId) => {
+				const unsubscribeSatelliteBasemapEnabled = satelliteBasemapEnabled.subscribe((enabled) => {
+					isSatelliteBasemapActive = enabled;
+				});
+				const unsubscribeActiveBasemapStyle = activeBasemapStyle.subscribe((styleId) => {
 					if (!basemapStyle || styleId === activeStyleId) {
 						return;
 					}
@@ -634,8 +663,7 @@
 							style: styleId,
 							token: arcgisToken,
 							preferences: {
-								language: 'en',
-								worldview: 'unitedStatesOfAmerica'
+								language: 'en'
 							}
 						})
 						.then(() => {
@@ -831,7 +859,8 @@
 						marker.remove();
 					}
 					routePlannerMarkers.clear();
-					unsubscribeSelectedBasemapStyle();
+					unsubscribeActiveBasemapStyle();
+					unsubscribeSatelliteBasemapEnabled();
 					unsubscribeViewerLayers();
 					unsubscribeProjectLayersVisible();
 					unsubscribeServiceAreaEnabled();
@@ -856,6 +885,24 @@
 <section class="viewer" aria-label="Map viewer">
 	<div bind:this={mapContainer} class="map-host" data-maplibre-container></div>
 	<div bind:this={lmvContainer} class="lmv-hidden"></div>
+	{#if hasArcgisToken}
+		<button
+			class="basemap-toggle-overlay"
+			type="button"
+			aria-pressed={isSatelliteBasemapActive}
+			aria-label="Toggle satellite basemap"
+			title={isSatelliteBasemapActive
+				? 'Switch to selected basemap style'
+				: 'Switch to satellite basemap'}
+			onclick={toggleBasemapOverlay}
+		>
+			<span
+				class="basemap-toggle-thumbnail"
+				aria-hidden="true"
+				style={`background-image: url('${isSatelliteBasemapActive ? '/thumbnail_imagery.png' : '/thumbnail_basemap.png'}');`}
+			></span>
+		</button>
+	{/if}
 	{#if lmvStatus && !mapError}
 		<div class="lmv-status" role="status">{lmvStatus}</div>
 	{/if}
@@ -875,6 +922,40 @@
 		position: relative;
 		overflow: hidden;
 		background: var(--calcite-color-background);
+	}
+
+	.basemap-toggle-overlay {
+		position: absolute;
+		inset-inline-start: 1rem;
+		bottom: 1rem;
+		z-index: 3;
+		display: grid;
+		place-items: center;
+		width: 4rem;
+		height: 4rem;
+		padding: 0.25rem;
+		border: 2px solid rgb(255 255 255 / 90%);
+		border-radius: 0.5rem;
+		background: var(--calcite-color-surface-2);
+		cursor: pointer;
+		box-shadow: 0 2px 8px rgb(0 0 0 / 28%);
+	}
+
+	.basemap-toggle-overlay:focus-visible {
+		outline: 2px solid var(--calcite-color-brand);
+		outline-offset: 2px;
+	}
+
+	.basemap-toggle-thumbnail {
+		display: block;
+		width: 100%;
+		height: 100%;
+		border: 1px solid var(--calcite-color-border-2);
+		border-radius: 0.35rem;
+		background-color: rgb(0 0 0 / 10%);
+		background-position: center;
+		background-repeat: no-repeat;
+		background-size: cover;
 	}
 
 	.map-host {
