@@ -27,8 +27,10 @@ export type ModelPlacement = ReturnType<typeof createMercatorModelPlacement>;
 export type LmvBridge = {
 	layer: maplibregl.CustomLayerInterface;
 	loadModel: (urn: string) => Promise<void>;
+	setPlacement: (placement: ModelPlacement) => void;
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	getViewer: () => any;
+	setInteractionMode: (mode: 'map' | 'lmv') => void;
 };
 
 // ── Matrix helpers ────────────────────────────────────────────
@@ -119,6 +121,33 @@ function computeCombinedModelProjectionMatrix({
 	return multiplyMatrix4Float64(centeredViewProjection, modelMatrix);
 }
 
+/**
+ * The map camera's eye position expressed in LMV model coordinates (the
+ * inverse of the modelMatrix above: world mercator = modelMercator +
+ * s·R·model). Tools read camera.position directly (e.g. gizmos use it for
+ * their drag plane), so the bridge keeps it honest even though the render
+ * path never uses it (matrixWorld stays pinned to identity).
+ */
+function computeModelSpaceEyePosition(
+	map: maplibregl.Map,
+	placement: ModelPlacement
+): [number, number, number] | null {
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	const eyeMerc = (map as any).getFreeCameraOptions?.()?.position;
+	if (!eyeMerc) return null;
+
+	const ex = eyeMerc.x - placement.modelMercator.x;
+	const ey = eyeMerc.y - placement.modelMercator.y;
+	const ez = (eyeMerc.z || 0) - placement.modelMercator.z;
+	const s = placement.mercatorScale;
+
+	return [
+		(ex * placement.rotationCos - ey * placement.rotationSin) / s,
+		(-ex * placement.rotationSin - ey * placement.rotationCos) / s,
+		ez / s
+	];
+}
+
 /** Clean up WebGL state that LMV's R71 resetGLState does not touch. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function restoreSharedWebGLState(
@@ -166,6 +195,9 @@ export function createLmvBridge({
 	let ready = false;
 	let viewerReady: Promise<void> | null = null; // set in onAdd; awaited by loadModel
 	let combinedMatrix64: Float64Array | null = null;
+	// Swappable placement — setPlacement() lets the app relocate the model to a
+	// different lat/long (e.g. when a different site is picked from the combo box).
+	let currentPlacement: ModelPlacement = modelPlacement;
 
 	// THREE is only available after the viewer3D CDN script has run — capture
 	// lazily at bridge-creation time (called from onMount), never at import.
@@ -205,7 +237,7 @@ export function createLmvBridge({
 				map: map as maplibregl.Map,
 				// eslint-disable-next-line @typescript-eslint/no-explicit-any
 				mainMatrix: (args as any).defaultProjectionData.mainMatrix,
-				placement: modelPlacement
+				placement: currentPlacement
 			});
 
 			applyMapLibreCameraTransform(combinedMatrix);
@@ -241,6 +273,7 @@ export function createLmvBridge({
 		bindLmvRepaintEvents();
 		patchLmvCanvasBounds();
 		patchLmvViewportToRay();
+		patchTransformControlsPicking();
 		bindMapPointerForwarding();
 		viewer.impl.setRightBtnSelection(true);
 
@@ -369,6 +402,57 @@ export function createLmvBridge({
 			ray.direction.copy(farPoint).sub(nearPoint).normalize();
 			return ray;
 		};
+
+		// Same pinning problem, different victim: the section tool's gizmo
+		// picker builds its pick ray as (per-pixel unprojected origin, camera
+		// getWorldDirection()). With matrixWorld pinned to identity the stock
+		// getWorldDirection always returns (0,0,-1), so every pick ray shoots
+		// down the model's Z axis and hover/drag never engages. Return the
+		// true forward of the combined view instead.
+		const worldForward = new THREE.Vector3();
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		camera.getWorldDirection = (target?: any) => {
+			target ||= new THREE.Vector3();
+			if (!combinedMatrix64) return target.set(0, 0, -1);
+
+			combinedInverse.fromArray(combinedMatrix64).invert();
+			nearPoint.set(0, 0, -1).applyProjection(combinedInverse);
+			farPoint.set(0, 0, 1).applyProjection(combinedInverse);
+			worldForward.copy(farPoint).sub(nearPoint).normalize();
+			return target.copy(worldForward);
+		};
+	}
+
+	// LMV's internal gizmo picking (used by the section tool and other stock
+	// gizmos) lives in Autodesk.Viewing.Private.TransformControls.
+	// intersectObjects(canvasX, canvasY, objects, camera). Its perspective
+	// branch reads camera.position (pinned to origin) and its ortho branch
+	// reads camera.matrixWorld (pinned to identity), so both produce wrong
+	// rays here. Route it through the patched camera.viewportToRay, which
+	// unprojects through the combined MapLibre matrix correctly.
+	function patchTransformControlsPicking(): void {
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const tc = (window as any).Autodesk?.Viewing?.Private?.TransformControls;
+		if (!tc?.intersectObjects || tc.__maplibreBridgePatched) return;
+		tc.__maplibreBridgePatched = true;
+
+		const stock = tc.intersectObjects.bind(tc);
+		const patchedRaycaster = new THREE.Raycaster();
+
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		tc.intersectObjects = function (canvasX: number, canvasY: number, objects: any, camera: any, flag: any) {
+			if (camera !== viewer?.impl?.camera || !combinedMatrix64) {
+				return stock(canvasX, canvasY, objects, camera, flag);
+			}
+			const ray = camera.viewportToRay({
+				x: (canvasX / camera.clientWidth) * 2 - 1,
+				y: -(canvasY / camera.clientHeight) * 2 + 1
+			});
+			patchedRaycaster.ray.origin.copy(ray.origin);
+			patchedRaycaster.ray.direction.copy(ray.direction);
+			const hits = patchedRaycaster.intersectObjects(objects, flag);
+			return hits.length ? hits[0] : null;
+		};
 	}
 
 	function bindMapPointerForwarding(): void {
@@ -397,6 +481,15 @@ export function createLmvBridge({
 				);
 			});
 		}
+	}
+
+	/**
+	 * Relocate the model to a new geographic placement. Safe to call at any
+	 * time — the next rendered frame picks the new matrix up immediately.
+	 */
+	function setPlacement(placement: ModelPlacement): void {
+		currentPlacement = placement;
+		map?.triggerRepaint();
 	}
 
 	async function loadModel(urn: string): Promise<void> {
@@ -462,16 +555,22 @@ export function createLmvBridge({
 		}
 	}
 
-	// ── Left-button pointer forwarding while a transform tool is active ──
-	// MapLibre owns the left button (dragPan); the translate/rotate gizmos
-	// need left-button drags on viewer.canvas. While one of these tools is
-	// active, map panning is suspended and left-button mouse events on the
-	// map canvas container are re-dispatched to the (hidden) LMV canvas
-	// with coordinates preserved, each followed by a repaint.
-	let transformForwardingActive = false;
-	const TRANSFORM_FORWARDED_EVENTS = ['mousedown', 'mousemove', 'mouseup', 'click'] as const;
+	// ── Pointer forwarding to the LMV canvas ──
+	// MapLibre owns the canvas by default. Two features need pointer events on
+	// the (hidden) LMV canvas instead: the translate/rotate gizmos (left-drag
+	// while a tool is active) and the header's "Interact with 3D model" toggle
+	// (LMV mode: all buttons, moves, clicks — everything except wheel, since
+	// the camera stays MapLibre-owned). While forwarding is on, map pan/rotate/
+	// double-click-zoom are suspended and mouse events on the map canvas
+	// container are re-dispatched to viewer.canvas with coordinates preserved,
+	// each followed by a repaint. Touch is not forwarded (pinch stays with
+	// MapLibre; this demo is desktop-focused).
+	let lmvModeActive = false;
+	let transformToolsActive = false;
+	let forwardingActive = false;
+	const FORWARDED_EVENTS = ['mousedown', 'mousemove', 'mouseup', 'click', 'dblclick'] as const;
 
-	function forwardTransformPointerEvent(event: MouseEvent): void {
+	function forwardPointerEvent(event: MouseEvent): void {
 		if (!viewer?.canvas) return;
 		// mousemove carries button 0 when idle; other types only for left button.
 		if (event.type !== 'mousemove' && event.button !== 0) return;
@@ -491,25 +590,40 @@ export function createLmvBridge({
 		map?.triggerRepaint();
 	}
 
-	function setTransformForwarding(enabled: boolean): void {
-		if (enabled === transformForwardingActive || !map) return;
-		transformForwardingActive = enabled;
+	function syncPointerForwarding(): void {
+		const shouldForward = lmvModeActive || transformToolsActive;
+		if (shouldForward === forwardingActive || !map) return;
+		forwardingActive = shouldForward;
 
 		const eventSource = map.getCanvasContainer();
 
-		if (enabled) {
+		if (shouldForward) {
 			map.dragPan.disable();
+			map.dragRotate.disable();
 			map.doubleClickZoom.disable();
-			for (const type of TRANSFORM_FORWARDED_EVENTS) {
-				eventSource.addEventListener(type, forwardTransformPointerEvent);
+			for (const type of FORWARDED_EVENTS) {
+				eventSource.addEventListener(type, forwardPointerEvent);
 			}
 		} else {
-			for (const type of TRANSFORM_FORWARDED_EVENTS) {
-				eventSource.removeEventListener(type, forwardTransformPointerEvent);
+			for (const type of FORWARDED_EVENTS) {
+				eventSource.removeEventListener(type, forwardPointerEvent);
 			}
 			map.dragPan.enable();
+			map.dragRotate.enable();
 			map.doubleClickZoom.enable();
 		}
+	}
+
+	// LMV mode (header toggle): route all mouse interaction to the model. LMV
+	// navigation is locked so left-drag becomes rubber-band selection instead
+	// of orbiting a camera the bridge pins every frame anyway.
+	function setInteractionMode(mode: 'map' | 'lmv'): void {
+		const enabled = mode === 'lmv';
+		if (enabled === lmvModeActive) return;
+		lmvModeActive = enabled;
+		viewer?.navigation?.setIsLocked?.(enabled);
+		if (map) map.getCanvas().style.cursor = enabled ? 'default' : '';
+		syncPointerForwarding();
 	}
 
 	// LMV 7's toolController emits no activation events, so wrap
@@ -522,10 +636,12 @@ export function createLmvBridge({
 		if (!toolController || toolController.__transformForwardingBound) return;
 		toolController.__transformForwardingBound = true;
 
-		const update = () =>
-			setTransformForwarding(
-				!!(extension?.translateTool?.active || extension?.rotateTool?.active)
+		const update = () => {
+			transformToolsActive = !!(
+				extension?.translateTool?.active || extension?.rotateTool?.active
 			);
+			syncPointerForwarding();
+		};
 
 		for (const fn of ['activateTool', 'deactivateTool'] as const) {
 			const original = toolController[fn];
@@ -569,7 +685,10 @@ export function createLmvBridge({
 		camera.scale.set(1, 1, 1);
 		camera.matrixWorld.identity();
 		camera.matrixWorldInverse.identity();
+
+		// The camera stays in LMV's ortho mode (flipping isPerspective makes
+		// impl.tick rebuild the projection and corrupts the shared render).
 	}
 
-	return { layer, loadModel, getViewer: () => viewer };
+	return { layer, loadModel, setPlacement, getViewer: () => viewer, setInteractionMode };
 }

@@ -198,7 +198,21 @@ export function loadLmvModel(viewer: any, urn: string): Promise<any> {
 				resolve(model);
 			});
 
-			viewer.loadDocumentNode(doc, viewable);
+			// Replace the previously loaded model so the viewer only holds the
+			// active site's model. Explicit unload of viewer.model (belt) plus
+			// keepCurrentModels:false (suspenders) so repeated site switches never
+			// accumulate models.
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			const previousModel: any = viewer.model;
+			if (previousModel) {
+				try {
+					viewer.unloadModel(previousModel);
+				} catch {
+					// Model may still be mid-load — loadDocumentNode will replace it.
+				}
+			}
+
+			viewer.loadDocumentNode(doc, viewable, { keepCurrentModels: false });
 		});
 	});
 }

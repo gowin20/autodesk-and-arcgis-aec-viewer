@@ -29,6 +29,7 @@
 		"@esri/calcite-components": "^5.1.2",
 		"@esri/maplibre-arcgis": "^1.3.0",
 		"maplibre-gl": "^5",
+		"maplibre-gl-draw": "^1.6.9",
 		"vitest": "^4.1.10"
 	}
 }

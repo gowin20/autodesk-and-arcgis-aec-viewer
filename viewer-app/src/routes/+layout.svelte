@@ -24,9 +24,11 @@
 	import '@esri/calcite-components/components/calcite-navigation/customElement';
 	import '@esri/calcite-components/components/calcite-navigation-logo/customElement';
 	import '@esri/calcite-components/components/calcite-notice/customElement';
+	import '@esri/calcite-components/components/calcite-option/customElement';
 	import '@esri/calcite-components/components/calcite-panel/customElement';
 	import '@esri/calcite-components/components/calcite-segmented-control/customElement';
 	import '@esri/calcite-components/components/calcite-segmented-control-item/customElement';
+	import '@esri/calcite-components/components/calcite-select/customElement';
 	import '@esri/calcite-components/components/calcite-shell/customElement';
 	import '@esri/calcite-components/components/calcite-shell-panel/customElement';
 	import '@esri/calcite-components/components/calcite-switch/customElement';
