@@ -180,12 +180,46 @@ export function createStoppedLmvViewer(
 	return viewer;
 }
 
+/**
+ * Unload every model currently in the viewer (the phased Snowdon load puts
+ * five models in; `viewer.model` alone would leave the other four behind).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function unloadAllLmvModels(viewer: any): void {
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	const models: any[] =
+		viewer.impl?.modelQueue?.()?.getModels?.() ?? (viewer.model ? [viewer.model] : []);
+	for (const model of models) {
+		try {
+			viewer.unloadModel(model);
+		} catch {
+			// Model may still be mid-load — loadDocumentNode will replace it.
+		}
+	}
+}
+
+/**
+ * unloadModel tears down asynchronously; models still in the queue when the
+ * next load starts survive it and render as untracked duplicates. Wait until
+ * the model queue is actually empty (bounded — a wedged model must not block
+ * the load; the keepCurrentModels:false path below is the backstop).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function waitForModelQueueEmpty(viewer: any, timeoutMs = 8000): Promise<void> {
+	const start = Date.now();
+	while (Date.now() - start < timeoutMs) {
+		const count = viewer.impl?.modelQueue?.()?.getModels?.()?.length ?? 0;
+		if (count === 0) return;
+		await new Promise((resolve) => setTimeout(resolve, 100));
+	}
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function loadLmvModel(viewer: any, urn: string): Promise<any> {
 	const Autodesk = autodesk();
 	return new Promise((resolve) => {
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		Autodesk.Viewing.Document.load(`urn:${urn}`, (doc: any) => {
+		Autodesk.Viewing.Document.load(`urn:${urn}`, async (doc: any) => {
 			const viewable = doc.getRoot().getDefaultGeometry();
 
 			// Attach BEFORE loadDocumentNode: MODEL_ADDED_EVENT can fire
@@ -198,21 +232,94 @@ export function loadLmvModel(viewer: any, urn: string): Promise<any> {
 				resolve(model);
 			});
 
-			// Replace the previously loaded model so the viewer only holds the
-			// active site's model. Explicit unload of viewer.model (belt) plus
-			// keepCurrentModels:false (suspenders) so repeated site switches never
-			// accumulate models.
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			const previousModel: any = viewer.model;
-			if (previousModel) {
-				try {
-					viewer.unloadModel(previousModel);
-				} catch {
-					// Model may still be mid-load — loadDocumentNode will replace it.
-				}
-			}
+			// Replace previously loaded models so the viewer only holds the
+			// active site's model. Explicit unload (belt) plus
+			// keepCurrentModels:false (suspenders) so repeated site switches
+			// never accumulate models.
+			unloadAllLmvModels(viewer);
+			await waitForModelQueueEmpty(viewer);
 
 			viewer.loadDocumentNode(doc, viewable, { keepCurrentModels: false });
 		});
+	});
+}
+
+/* ── Construction-phasing model (Snowdon Towers) ──────────────
+ * The Snowdon model was translated into five coordinated 3D views, one per
+ * Revit category (no combined view exists). The phasing extension needs each
+ * category loaded as its own model instance, tagged with its category. */
+
+export const SNOWDON_MODEL_URN =
+	'dXJuOmFkc2sub2JqZWN0czpvcy5vYmplY3Q6c2FtcGxlbW9kZWxzL1Nub3dkb24lMjBUb3dlcnMlMjBTYW1wbGUlMjBBcmNoaXRlY3R1cmFsLnJ2dA==';
+
+/** Viewable name -> phasing category (from wallabyway/phase-lmv-extension). */
+export const SNOWDON_VIEWABLES: Record<string, string> = {
+	'Coord - Arch Floors': 'Floors',
+	'Coord - Arch Stairs': 'Stairs',
+	'Coord - Arch Walls': 'Walls',
+	'Coord - Arch Lighting': 'Lighting Fixtures',
+	'Coord - Arch Roofs': 'Roofs'
+};
+
+/**
+ * Load every coordinated category viewable of the Snowdon model into the
+ * viewer at once. Resolves with [{model, category}] once all viewables are
+ * added. No fitToView — MapLibre owns the camera.
+ */
+export function loadLmvPhasedModels(
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	viewer: any,
+	urn: string,
+	viewables: Record<string, string>
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+): Promise<Array<{ model: any; category: string }>> {
+	const Autodesk = autodesk();
+	return new Promise((resolve, reject) => {
+		Autodesk.Viewing.Document.load(
+			`urn:${urn}`,
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			async (doc: any) => {
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				const nameOf = (v: any): string => (typeof v.name === 'function' ? v.name() : v.name);
+				const wanted = doc
+					.getRoot()
+					.search({ role: '3d' })
+					// eslint-disable-next-line @typescript-eslint/no-explicit-any
+					.filter((v: any) => v.data && v.data.type === 'geometry' && viewables[nameOf(v)]);
+				if (!wanted.length) {
+					reject(new Error('[phasing] no coordinated category viewables found'));
+					return;
+				}
+
+				unloadAllLmvModels(viewer);
+				await waitForModelQueueEmpty(viewer);
+
+				// First viewable goes through LMV's own full teardown
+				// (keepCurrentModels:false) as a backstop for anything the
+				// manual unload missed; the rest are added alongside it.
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				const toEntry = (model: any, viewable: any) => ({
+					model,
+					category: viewables[nameOf(viewable)]
+				});
+				const first = await viewer.loadDocumentNode(doc, wanted[0], {
+					keepCurrentModels: false
+				});
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				const rest = await Promise.all(
+					// eslint-disable-next-line @typescript-eslint/no-explicit-any
+					wanted.slice(1).map((viewable: any) =>
+						viewer.loadDocumentNode(doc, viewable, { keepCurrentModels: true })
+					)
+				);
+				resolve([
+					toEntry(first, wanted[0]),
+					// eslint-disable-next-line @typescript-eslint/no-explicit-any
+					...rest.map((model: any, i: number) => toEntry(model, wanted[i + 1]))
+				]);
+			},
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			(code: any, message: any) => reject(new Error(`[phasing] document load failed: ${code} ${message}`))
+		);
 	});
 }

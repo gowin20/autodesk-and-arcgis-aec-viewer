@@ -7,6 +7,15 @@ export type Site = {
 	urn: string;
 	thumbnail?: string;
 	bearingOffset: number;
+	/** Model rotation in degrees around its Z axis (placement matrix). */
+	modelRotationDeg: number;
+	/** Extra scale multiplier applied on top of the base unit scale. */
+	modelScale: number;
+	/** Model placement origin (geo); falls back to the pin lon/lat when absent. */
+	modelOriginLon: number;
+	modelOriginLat: number;
+	/** Model placement altitude in metres above ground (default 10). */
+	modelAltitude: number;
 	lon: number;
 	lat: number;
 };
@@ -47,6 +56,11 @@ export function loadSiteCatalog(): Promise<Site[]> {
 				urn: f.properties.urn,
 				thumbnail: f.properties.thumbnail,
 				bearingOffset: f.properties.bearingOffset || 0,
+				modelRotationDeg: f.properties.modelRotationDeg ?? 0,
+				modelScale: f.properties.modelScale ?? 1,
+				modelOriginLon: f.properties.modelOriginLon ?? f.geometry.coordinates[0],
+				modelOriginLat: f.properties.modelOriginLat ?? f.geometry.coordinates[1],
+				modelAltitude: f.properties.modelAltitude ?? 10,
 				lon: f.geometry.coordinates[0],
 				lat: f.geometry.coordinates[1]
 			}))

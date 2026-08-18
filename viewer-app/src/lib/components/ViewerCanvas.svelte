@@ -197,10 +197,13 @@
 
 						bridge.setPlacement(
 							createMercatorModelPlacement({
-								origin: [site.lon, site.lat],
-								altitude: 10,
-								rotationDeg: 30,
-								unitScale: 0.3048
+								// Model origin may differ from the pin (per-site modelOriginLon/Lat).
+								origin: [site.modelOriginLon ?? site.lon, site.modelOriginLat ?? site.lat],
+								altitude: site.modelAltitude ?? 10,
+								// Per-site model orientation/scale from the geojson
+								// (modelRotationDeg, modelScale). Base unitScale 0.3048 = feet→meters.
+								rotationDeg: site.modelRotationDeg ?? 0,
+								unitScale: 0.3048 * (site.modelScale ?? 1)
 							})
 						);
 						if (flyTo) {
@@ -494,6 +497,21 @@
 			</div>
 		</div>
 	{/if}
+	<!-- Construction-phasing slider bar. Pure presentation: the LMV
+	     PhasingExtension (src/lib/lmv/phasing-extension) owns all interaction
+	     via these element ids; styles live in app.css because the tooltip chip
+	     is injected by the extension (innerHTML), outside Svelte's scoping. -->
+	<div id="phasing-bar" class="hidden">
+		<div class="phasing-chips" id="phasing-legend"></div>
+		<div class="phasing-row">
+			<span class="phasing-title">Construction Phasing</span>
+			<div class="phasing-slider-wrap">
+				<input type="range" id="phasing-slider" min="0" max="1000" step="1" value="0" />
+			</div>
+			<span class="phasing-current" id="phasing-current">—</span>
+			<span class="phasing-reset" id="phasing-reset">reset</span>
+		</div>
+	</div>
 </section>
 
 <style>

@@ -16,7 +16,10 @@ import {
 	resolveLmvRendererClass,
 	createSharedLmvRenderer,
 	createStoppedLmvViewer,
-	loadLmvModel
+	loadLmvModel,
+	loadLmvPhasedModels,
+	SNOWDON_MODEL_URN,
+	SNOWDON_VIEWABLES
 } from './lmv-loader';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -28,6 +31,7 @@ export type LmvBridge = {
 	layer: maplibregl.CustomLayerInterface;
 	loadModel: (urn: string) => Promise<void>;
 	setPlacement: (placement: ModelPlacement) => void;
+	getPlacement: () => ModelPlacement;
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	getViewer: () => any;
 	setInteractionMode: (mode: 'map' | 'lmv') => void;
@@ -492,18 +496,93 @@ export function createLmvBridge({
 		map?.triggerRepaint();
 	}
 
-	async function loadModel(urn: string): Promise<void> {
-		await viewerReady;
+	function getPlacement(): ModelPlacement {
+		return currentPlacement;
+	}
 
-		ready = false;
-		onStatus('Loading model...');
-		await loadLmvModel(viewer, urn);
-		await ensureVisualClustersExtension();
-		await ensureTransformExtension();
-		ready = true;
+	// Model loads must never overlap: two concurrent Snowdon loads interleave
+	// "unload all" with "add viewable" and leave untracked duplicate models
+	// behind. Chain every call onto the previous one, and skip the work
+	// entirely when the requested model is already in the viewer (the combo
+	// box and the proximity loader often ask for the same site together).
+	let loadChain: Promise<void> = Promise.resolve();
+	let loadedUrn: string | null = null;
 
-		onStatus('Model loaded');
-		map?.triggerRepaint();
+	function loadModel(urn: string): Promise<void> {
+		const run = loadChain.then(async () => {
+			await viewerReady;
+			if (urn === loadedUrn && viewer.impl?.modelQueue?.()?.getModels?.()?.length) {
+				return;
+			}
+
+			ready = false;
+			onStatus('Loading model...');
+			try {
+				if (urn === SNOWDON_MODEL_URN) {
+					// Construction-phasing model: five coordinated category
+					// viewables, each fed to the PhasingExtension tagged with its
+					// category.
+					const extension = await ensurePhasingExtension();
+					const models = await loadLmvPhasedModels(viewer, urn, SNOWDON_VIEWABLES);
+					if (extension) {
+						extension.resetForNewModel();
+						for (const { model, category } of models) {
+							extension.addModel(model, category);
+						}
+					}
+				} else {
+					await loadLmvModel(viewer, urn);
+					// A non-phasing site replaced the model — drop stale engine state.
+					phasingExtension?.resetForNewModel();
+				}
+				loadedUrn = urn;
+			} catch (error) {
+				loadedUrn = null; // allow retry
+				throw error;
+			}
+
+			await ensureVisualClustersExtension();
+			await ensureTransformExtension();
+			ready = true;
+
+			onStatus('Model loaded');
+			map?.triggerRepaint();
+		});
+		loadChain = run.catch(() => {});
+		return run;
+	}
+
+	// Loaded once, the first time the Snowdon (phasing) model loads. Adds the
+	// "Construction Phasing" button to the LMV toolbar; the slider bar markup
+	// lives in ViewerCanvas.svelte. Failures are logged, never fatal.
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	let phasingExtension: any = null;
+	let phasingRequested = false;
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	async function ensurePhasingExtension(): Promise<any> {
+		if (phasingExtension) return phasingExtension;
+		if (phasingRequested) return null;
+		phasingRequested = true;
+		try {
+			const { registerPhasingExtension, PHASING_EXTENSION_ID } = await import(
+				'./phasing-extension/phasing-extension'
+			);
+			registerPhasingExtension();
+			phasingExtension = await viewer.loadExtension(PHASING_EXTENSION_ID);
+
+			// LMV's render loop is stopped — MapLibre owns frames. Slider input
+			// and bar toggles funnel into update(), so one wrapper repaints for
+			// every hide/theming/drop change the engine makes.
+			const originalUpdate = phasingExtension.update.bind(phasingExtension);
+			phasingExtension.update = (...args: unknown[]) => {
+				originalUpdate(...args);
+				map?.triggerRepaint();
+			};
+		} catch (error) {
+			console.warn('[LMV] Phasing extension failed to load', error);
+			phasingExtension = null;
+		}
+		return phasingExtension;
 	}
 
 	// Loaded once, after the first model is in. Adds the "Visual Clusters"
@@ -690,5 +769,5 @@ export function createLmvBridge({
 		// impl.tick rebuild the projection and corrupts the shared render).
 	}
 
-	return { layer, loadModel, setPlacement, getViewer: () => viewer, setInteractionMode };
+	return { layer, loadModel, setPlacement, getPlacement, getViewer: () => viewer, setInteractionMode };
 }

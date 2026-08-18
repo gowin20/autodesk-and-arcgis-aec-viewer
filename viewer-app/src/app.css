@@ -50,3 +50,138 @@ textarea {
 .lmv-hidden .docking-panel {
 	pointer-events: auto;
 }
+
+/* ── Construction-phasing slider bar ─────────────────────────
+   Styles for the markup in ViewerCanvas.svelte, driven by the LMV
+   PhasingExtension. Global because the tooltip chip is injected by the
+   extension via innerHTML (Svelte-scoped styles would not reach it).
+   Ported from wallabyway/phase-lmv-extension (index.html), unchanged. */
+#phasing-bar {
+	position: absolute;
+	left: 50%;
+	bottom: 90px; /* LMV's navTools is ~50px tall at the bottom edge */
+	transform: translateX(-50%);
+	width: min(880px, calc(100vw - 32px));
+	z-index: 3;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	background: rgba(24, 30, 40, 0.94);
+	color: #e8edf4;
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	border-radius: 10px;
+	padding: 6px 14px 8px;
+	box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+	user-select: none;
+	white-space: nowrap;
+	transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+#phasing-bar.hidden {
+	opacity: 0;
+	transform: translateX(-50%) translateY(14px);
+	pointer-events: none;
+}
+
+/* chips float above the slider track, tooltip-style, at each phase start */
+.phasing-chips {
+	position: relative;
+	height: 20px;
+	margin: 0 8px;
+}
+
+.phasing-chip {
+	position: absolute;
+	top: 0;
+	transform: translateX(-50%);
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	font-size: 11px;
+	color: #c9d6e4;
+	background: rgba(255, 255, 255, 0.06);
+	border: 1px solid rgba(255, 255, 255, 0.1);
+	border-radius: 20px;
+	padding: 1px 8px;
+	cursor: pointer;
+}
+
+.phasing-chip:hover {
+	background: rgba(255, 255, 255, 0.12);
+}
+
+.phasing-chip .dot {
+	width: 9px;
+	height: 9px;
+	border-radius: 50%;
+	flex: none;
+}
+
+.phasing-chip.active {
+	outline: 1px solid #4aa8ff;
+	background: rgba(74, 168, 255, 0.16);
+}
+
+.phasing-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+}
+
+.phasing-title {
+	font-weight: 600;
+	font-size: 12px;
+	letter-spacing: 0.4px;
+	text-transform: uppercase;
+	color: #9fb4cc;
+}
+
+.phasing-slider-wrap {
+	flex: 1 1 auto;
+	min-width: 60px;
+}
+
+#phasing-slider {
+	width: 100%;
+	margin: 0;
+	accent-color: #4aa8ff;
+	cursor: pointer;
+}
+
+.phasing-current {
+	font-size: 12px;
+	font-weight: 600;
+	padding: 3px 10px;
+	border-radius: 20px;
+	background: #2c3a4d;
+	min-width: 90px;
+	text-align: center;
+}
+
+.phasing-current.dim {
+	color: #8fa2b8;
+	background: #232c3a;
+}
+
+.phasing-reset {
+	font-size: 11px;
+	color: #7fd1ff;
+	cursor: pointer;
+	padding: 3px 6px;
+	border: 1px solid rgba(127, 209, 255, 0.35);
+	border-radius: 6px;
+}
+
+.phasing-reset:hover {
+	background: rgba(127, 209, 255, 0.12);
+}
+
+@media (max-width: 820px) {
+	.phasing-title {
+		display: none;
+	}
+
+	.phasing-chip {
+		padding: 1px 6px;
+	}
+}
