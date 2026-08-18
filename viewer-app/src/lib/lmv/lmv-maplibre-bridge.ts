@@ -21,6 +21,7 @@ import {
 	SNOWDON_MODEL_URN,
 	SNOWDON_VIEWABLES
 } from './lmv-loader';
+import { APP_COLOR_MODE, getLmvTheme } from '$lib/config/theme';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyViewer = any;
@@ -284,7 +285,7 @@ export function createLmvBridge({
 		viewer.setGhosting(false);
 		viewer.setGroundShadow(false);
 		viewer.setLightPreset(1);
-		viewer.setTheme('light-theme');
+		viewer.setTheme(getLmvTheme(APP_COLOR_MODE));
 		viewer.impl.renderer().setAOEnabled(false);
 	}
 

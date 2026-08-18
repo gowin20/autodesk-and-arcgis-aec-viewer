@@ -1,21 +1,13 @@
 import { geocode, reverseGeocode, suggest, type IGeocodeResponse, type IReverseGeocodeResponse, type ISuggestResponse } from '@esri/arcgis-rest-geocoding';
-import { ApiKeyManager, type ILocation, type IPoint } from '@esri/arcgis-rest-request';
+import type { ILocation, IPoint } from '@esri/arcgis-rest-request';
+import { arcgisAuthentication } from './authentication';
 
-const arcgisAccessToken =
-	import.meta.env.VITE_ARCGIS_ACCESS_TOKEN?.trim() ??
-	import.meta.env.PUBLIC_ARCGIS_ACCESS_TOKEN?.trim() ??
-	'';
-
-const authentication = arcgisAccessToken
-	? ApiKeyManager.fromKey(arcgisAccessToken)
-	: undefined;
-
-type Suggestion = ISuggestResponse['suggestions'][number];
-type AddressCandidate = IGeocodeResponse['candidates'][number];
+export type GeocodeSuggestion = ISuggestResponse['suggestions'][number];
+export type AddressCandidate = IGeocodeResponse['candidates'][number];
 type ReverseGeocodeLocation = IPoint | ILocation | [number, number];
 
 const getRequestOptions = (location?: string) => ({
-	...(authentication ? { authentication } : {}),
+	...(arcgisAuthentication ? { authentication: arcgisAuthentication } : {}),
 	...(location ? { params: { location } } : {})
 });
 
@@ -23,7 +15,7 @@ const getRequestOptions = (location?: string) => ({
 export const findSuggestions = async (
 	query: string | null | undefined,
 	center: { lng: number; lat: number } | null | undefined
-): Promise<Suggestion[] | undefined> => {
+): Promise<GeocodeSuggestion[] | undefined> => {
 	if (!query || !center) return undefined;
 
 	const response = await suggest(query, getRequestOptions(`${center.lng},${center.lat}`));
@@ -42,7 +34,7 @@ export const getAddressCandidate = async (
 	const response = await geocode({
 		singleLine: text ?? undefined,
 		magicKey: key ?? undefined,
-		...(authentication ? { authentication } : {})
+		...(arcgisAuthentication ? { authentication: arcgisAuthentication } : {})
 	});
 
 	if (response.candidates.length > 0) return response.candidates[0];
@@ -58,7 +50,7 @@ export const getReverseGeocode = async (
 	console.log('Reverse geocode request: ', location);
 
 	const response = await reverseGeocode(location, getRequestOptions());
-	if (!response.address || !response.location) return null;
+	if (!response.address) return null;
 
 	return response;
 };

@@ -1,10 +1,36 @@
 @import '@esri/calcite-components/main.css';
 
 :root {
+	/* App theme tokens (single source of truth for custom light mode) */
+	--app-light-surface-1: #FAFAAF;
+	--app-light-surface-2: #FFFFDB;
+	--app-brand: #FFFE00;
+
+	/* Keep brand centralized across modes */
+	--calcite-color-brand: var(--app-brand);
+
 	font-family: var(--calcite-sans-family);
 	color: var(--calcite-color-text-1);
 	background: var(--calcite-color-background);
 	font-synthesis: none;
+}
+
+:root.calcite-mode-light {
+	--calcite-color-surface-1: var(--app-light-surface-1);
+	--calcite-color-surface-2: var(--app-light-surface-2);
+	--calcite-color-foreground-1: var(--calcite-color-surface-1);
+	--calcite-color-foreground-2: var(--calcite-color-surface-2);
+	--calcite-panel-background-color: var(--calcite-color-surface-1);
+	--calcite-block-background-color: var(--calcite-color-surface-2);
+}
+
+:root.calcite-mode-light calcite-panel {
+	--calcite-panel-background-color: var(--calcite-color-surface-1);
+	--calcite-panel-header-background-color: var(--calcite-color-surface-2);
+}
+
+:root.calcite-mode-light calcite-block {
+	--calcite-block-background-color: var(--calcite-color-surface-2);
 }
 
 html,
@@ -24,6 +50,36 @@ input,
 select,
 textarea {
 	font: inherit;
+}
+
+/* Keep MapLibre popups aligned with Calcite surface theming */
+:root .maplibregl-popup-content {
+	background: var(--calcite-color-surface-2) !important;
+	color: var(--calcite-color-text-1) !important;
+}
+
+:root .maplibregl-popup-close-button {
+	color: var(--calcite-color-text-1) !important;
+}
+
+:root .maplibregl-popup-anchor-top .maplibregl-popup-tip,
+:root .maplibregl-popup-anchor-top-left .maplibregl-popup-tip,
+:root .maplibregl-popup-anchor-top-right .maplibregl-popup-tip {
+	border-bottom-color: var(--calcite-color-surface-2) !important;
+}
+
+:root .maplibregl-popup-anchor-bottom .maplibregl-popup-tip,
+:root .maplibregl-popup-anchor-bottom-left .maplibregl-popup-tip,
+:root .maplibregl-popup-anchor-bottom-right .maplibregl-popup-tip {
+	border-top-color: var(--calcite-color-surface-2) !important;
+}
+
+:root .maplibregl-popup-anchor-left .maplibregl-popup-tip {
+	border-right-color: var(--calcite-color-surface-2) !important;
+}
+
+:root .maplibregl-popup-anchor-right .maplibregl-popup-tip {
+	border-left-color: var(--calcite-color-surface-2) !important;
 }
 
 /* ── LMV (APS Viewer) overlay ────────────────────────────────

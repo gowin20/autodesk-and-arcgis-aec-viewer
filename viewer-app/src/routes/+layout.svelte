@@ -3,29 +3,37 @@
 	import { base } from '$app/paths';
 	import { setAssetPath } from '@esri/calcite-components';
 	import favicon from '$lib/assets/favicon.svg';
+	import { APP_COLOR_MODE, applyColorMode } from '$lib/config/theme';
 	import '../app.css';
 
 	if (browser) {
+		applyColorMode(APP_COLOR_MODE);
 		setAssetPath(`${base}/calcite/`);
 	}
 
 	import '@esri/calcite-components/components/calcite-action/customElement';
 	import '@esri/calcite-components/components/calcite-action-bar/customElement';
+	import '@esri/calcite-components/components/calcite-autocomplete/customElement';
+	import '@esri/calcite-components/components/calcite-autocomplete-item/customElement';
 	import '@esri/calcite-components/components/calcite-block/customElement';
 	import '@esri/calcite-components/components/calcite-button/customElement';
-	import '@esri/calcite-components/components/calcite-combobox/customElement';
-	import '@esri/calcite-components/components/calcite-combobox-item/customElement';
-	import '@esri/calcite-components/components/calcite-combobox-item-group/customElement';
 	import '@esri/calcite-components/components/calcite-dropdown/customElement';
 	import '@esri/calcite-components/components/calcite-dropdown-group/customElement';
 	import '@esri/calcite-components/components/calcite-dropdown-item/customElement';
+	import '@esri/calcite-components/components/calcite-flow/customElement';
+	import '@esri/calcite-components/components/calcite-flow-item/customElement';
+	import '@esri/calcite-components/components/calcite-icon/customElement';
 	import '@esri/calcite-components/components/calcite-input/customElement';
 	import '@esri/calcite-components/components/calcite-label/customElement';
+	import '@esri/calcite-components/components/calcite-list/customElement';
+	import '@esri/calcite-components/components/calcite-list-item/customElement';
+	import '@esri/calcite-components/components/calcite-list-item-group/customElement';
 	import '@esri/calcite-components/components/calcite-navigation/customElement';
 	import '@esri/calcite-components/components/calcite-navigation-logo/customElement';
 	import '@esri/calcite-components/components/calcite-notice/customElement';
 	import '@esri/calcite-components/components/calcite-option/customElement';
 	import '@esri/calcite-components/components/calcite-panel/customElement';
+	import '@esri/calcite-components/components/calcite-option/customElement';
 	import '@esri/calcite-components/components/calcite-segmented-control/customElement';
 	import '@esri/calcite-components/components/calcite-segmented-control-item/customElement';
 	import '@esri/calcite-components/components/calcite-select/customElement';
