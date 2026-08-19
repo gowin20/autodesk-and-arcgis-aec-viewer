@@ -28,7 +28,7 @@ const MAP_ICON =
 	'data:image/svg+xml;charset=utf-8,' +
 	encodeURIComponent(
 		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-			<g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+			<g fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 				<path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2z"/>
 				<path d="M9 4v14M15 6v14"/>
 			</g>
@@ -39,7 +39,7 @@ const WALK_ICON =
 	'data:image/svg+xml;charset=utf-8,' +
 	encodeURIComponent(
 		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-			<g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+			<g fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 				<circle cx="13" cy="4.5" r="2"/>
 				<path d="M13 8l-3 5 2 3-1 5M13 8l3 3 3 1M10 13l-3 2M12 16l3 1 1 4"/>
 			</g>

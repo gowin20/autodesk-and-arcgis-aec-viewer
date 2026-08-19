@@ -107,6 +107,13 @@ textarea {
 	pointer-events: auto;
 }
 
+/* LMV's built-in camera nav tools are replaced by the Map/Walk camera
+   buttons (camera-controls-extension). Hidden via CSS because LMV
+   rebuilds the toolbar DOM on every model load. */
+.lmv-hidden #navTools {
+	display: none !important;
+}
+
 /* ── Construction-phasing slider bar ─────────────────────────
    Styles for the markup in ViewerCanvas.svelte, driven by the LMV
    PhasingExtension. Global because the tooltip chip is injected by the
@@ -115,7 +122,7 @@ textarea {
 #phasing-bar {
 	position: absolute;
 	left: 50%;
-	bottom: 90px; /* LMV's navTools is ~50px tall at the bottom edge */
+	bottom: 90px; /* clears the LMV toolbar row at the bottom edge */
 	transform: translateX(-50%);
 	width: min(880px, calc(100vw - 32px));
 	z-index: 3;
