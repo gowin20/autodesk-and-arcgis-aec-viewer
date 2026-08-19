@@ -54,7 +54,15 @@ export const DEFAULT_PHASES: PhasingConfig = {
 	],
 	byCategory: [
 		{ id: 'roof', name: 'Roof', short: 'Roof', color: [164, 38, 44], categories: ['Roofs'] },
-		{ id: 'mep', name: 'MEP', short: 'MEP', color: [176, 122, 10], categories: ['Lighting Fixtures', 'Plumbing Fixtures', 'Specialty Equipment', 'Food Service Equipment'] },
+		{ id: 'mep', name: 'MEP', short: 'MEP', color: [176, 122, 10], categories: [
+			'Lighting Fixtures', 'Plumbing Fixtures', 'Specialty Equipment', 'Food Service Equipment',
+			// mechanical / plumbing distribution (Office.rvt and other full-discipline models)
+			'Mechanical Equipment', 'Air Terminals', 'Ducts', 'Duct Fittings', 'Flex Ducts',
+			'Pipes', 'Pipe Fittings', 'Pipe Accessories', 'Sprinklers',
+			// electrical / low-voltage
+			'Electrical Fixtures', 'Electrical Equipment', 'Lighting Devices', 'Telephone Devices',
+			'Data Devices', 'Fire Alarm Devices', 'Security Devices', 'Communication Devices', 'Nurse Call Devices'
+		] },
 		{ id: 'ffe', name: 'Finishes & FF&E', short: 'FF&E', color: [226, 140, 190], categories: ['Ceilings', 'Casework', 'Furniture', 'Generic Models'] },
 		{ id: 'site', name: 'Site & Landscape', short: 'Site', color: [133, 138, 60], categories: ['Site', 'Planting', 'Hardscape', 'Parking', 'Entourage'] }
 	]
