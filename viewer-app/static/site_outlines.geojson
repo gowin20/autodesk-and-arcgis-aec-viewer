@@ -237,9 +237,9 @@
       },
       "properties": {
         "id": "snowdon-architectural",
-        "name": "Snowdon Towers Sample Architectural",
+        "name": "Snowdon Towers (Complete)",
         "kind": "pin",
-        "urn": "dXJuOmFkc2sub2JqZWN0czpvcy5vYmplY3Q6c2FtcGxlbW9kZWxzL1Nub3dkb24lMjBUb3dlcnMlMjBTYW1wbGUlMjBBcmNoaXRlY3R1cmFsLnJ2dA==",
+        "urn": "dXJuOmFkc2sub2JqZWN0czpvcy5vYmplY3Q6c2FtcGxlbW9kZWxzL1Nub3dkb24tVG93ZXItKENvbXBsZXRlKS5ydnQ=",
         "thumbnail": "docs/thumbs/snowdon-architectural.png",
         "bearingOffset": -30,
         "modelRotationDeg": 30
@@ -261,9 +261,9 @@
       },
       "properties": {
         "id": "snowdon-architectural",
-        "name": "Snowdon Towers Sample Architectural",
+        "name": "Snowdon Towers (Complete)",
         "kind": "outline",
-        "urn": "dXJuOmFkc2sub2JqZWN0czpvcy5vYmplY3Q6c2FtcGxlbW9kZWxzL1Nub3dkb24lMjBUb3dlcnMlMjBTYW1wbGUlMjBBcmNoaXRlY3R1cmFsLnJ2dA=="
+        "urn": "dXJuOmFkc2sub2JqZWN0czpvcy5vYmplY3Q6c2FtcGxlbW9kZWxzL1Nub3dkb24tVG93ZXItKENvbXBsZXRlKS5ydnQ="
       }
     }
   ]

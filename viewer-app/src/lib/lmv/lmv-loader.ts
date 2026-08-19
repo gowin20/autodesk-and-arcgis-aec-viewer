@@ -226,10 +226,11 @@ export function loadLmvModel(viewer: any, urn: string): Promise<any> {
 			// synchronously during the call. Note: GEOMETRY_LOADED_EVENT no
 			// longer fires reliably on LMV >= 7.124 when the viewer is driven
 			// manually (impl.stop + external tick), so MODEL_ADDED is our signal.
+			// The listener receives an event object — resolve with event.model.
 			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			viewer.addEventListener(Autodesk.Viewing.MODEL_ADDED_EVENT, function onAdded(model: any) {
+			viewer.addEventListener(Autodesk.Viewing.MODEL_ADDED_EVENT, function onAdded(event: any) {
 				viewer.removeEventListener(Autodesk.Viewing.MODEL_ADDED_EVENT, onAdded);
-				resolve(model);
+				resolve(event?.model ?? event);
 			});
 
 			// Replace previously loaded models so the viewer only holds the
@@ -244,82 +245,11 @@ export function loadLmvModel(viewer: any, urn: string): Promise<any> {
 	});
 }
 
-/* ── Construction-phasing model (Snowdon Towers) ──────────────
- * The Snowdon model was translated into five coordinated 3D views, one per
- * Revit category (no combined view exists). The phasing extension needs each
- * category loaded as its own model instance, tagged with its category. */
+/* ── Construction-phasing model (Snowdon Towers Complete) ─────
+ * Single combined {3D} view; the phasing engine buckets elements by their
+ * per-element 'Category' property, so no multi-viewable loading is needed.
+ * Loaded through the regular loadLmvModel path; the bridge feeds the model
+ * to the PhasingExtension. */
 
 export const SNOWDON_MODEL_URN =
-	'dXJuOmFkc2sub2JqZWN0czpvcy5vYmplY3Q6c2FtcGxlbW9kZWxzL1Nub3dkb24lMjBUb3dlcnMlMjBTYW1wbGUlMjBBcmNoaXRlY3R1cmFsLnJ2dA==';
-
-/** Viewable name -> phasing category (from wallabyway/phase-lmv-extension). */
-export const SNOWDON_VIEWABLES: Record<string, string> = {
-	'Coord - Arch Floors': 'Floors',
-	'Coord - Arch Stairs': 'Stairs',
-	'Coord - Arch Walls': 'Walls',
-	'Coord - Arch Lighting': 'Lighting Fixtures',
-	'Coord - Arch Roofs': 'Roofs'
-};
-
-/**
- * Load every coordinated category viewable of the Snowdon model into the
- * viewer at once. Resolves with [{model, category}] once all viewables are
- * added. No fitToView — MapLibre owns the camera.
- */
-export function loadLmvPhasedModels(
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	viewer: any,
-	urn: string,
-	viewables: Record<string, string>
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-): Promise<Array<{ model: any; category: string }>> {
-	const Autodesk = autodesk();
-	return new Promise((resolve, reject) => {
-		Autodesk.Viewing.Document.load(
-			`urn:${urn}`,
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			async (doc: any) => {
-				// eslint-disable-next-line @typescript-eslint/no-explicit-any
-				const nameOf = (v: any): string => (typeof v.name === 'function' ? v.name() : v.name);
-				const wanted = doc
-					.getRoot()
-					.search({ role: '3d' })
-					// eslint-disable-next-line @typescript-eslint/no-explicit-any
-					.filter((v: any) => v.data && v.data.type === 'geometry' && viewables[nameOf(v)]);
-				if (!wanted.length) {
-					reject(new Error('[phasing] no coordinated category viewables found'));
-					return;
-				}
-
-				unloadAllLmvModels(viewer);
-				await waitForModelQueueEmpty(viewer);
-
-				// First viewable goes through LMV's own full teardown
-				// (keepCurrentModels:false) as a backstop for anything the
-				// manual unload missed; the rest are added alongside it.
-				// eslint-disable-next-line @typescript-eslint/no-explicit-any
-				const toEntry = (model: any, viewable: any) => ({
-					model,
-					category: viewables[nameOf(viewable)]
-				});
-				const first = await viewer.loadDocumentNode(doc, wanted[0], {
-					keepCurrentModels: false
-				});
-				// eslint-disable-next-line @typescript-eslint/no-explicit-any
-				const rest = await Promise.all(
-					// eslint-disable-next-line @typescript-eslint/no-explicit-any
-					wanted.slice(1).map((viewable: any) =>
-						viewer.loadDocumentNode(doc, viewable, { keepCurrentModels: true })
-					)
-				);
-				resolve([
-					toEntry(first, wanted[0]),
-					// eslint-disable-next-line @typescript-eslint/no-explicit-any
-					...rest.map((model: any, i: number) => toEntry(model, wanted[i + 1]))
-				]);
-			},
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			(code: any, message: any) => reject(new Error(`[phasing] document load failed: ${code} ${message}`))
-		);
-	});
-}
+	'dXJuOmFkc2sub2JqZWN0czpvcy5vYmplY3Q6c2FtcGxlbW9kZWxzL1Nub3dkb24tVG93ZXItKENvbXBsZXRlKS5ydnQ=';

@@ -17,16 +17,18 @@ import {
 	createSharedLmvRenderer,
 	createStoppedLmvViewer,
 	loadLmvModel,
-	loadLmvPhasedModels,
-	SNOWDON_MODEL_URN,
-	SNOWDON_VIEWABLES
+	SNOWDON_MODEL_URN
 } from './lmv-loader';
 import { APP_COLOR_MODE, getLmvTheme } from '$lib/config/theme';
+import { ensureCustomViewMatrixPatch } from '$lib/walk/custom-view-matrix-patch';
+import { WalkingCam } from '$lib/walk/walking-cam';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyViewer = any;
 
 export type ModelPlacement = ReturnType<typeof createMercatorModelPlacement>;
+
+export type LmvInteractionMode = 'map' | 'lmv';
 
 export type LmvBridge = {
 	layer: maplibregl.CustomLayerInterface;
@@ -35,7 +37,13 @@ export type LmvBridge = {
 	getPlacement: () => ModelPlacement;
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	getViewer: () => any;
-	setInteractionMode: (mode: 'map' | 'lmv') => void;
+	// 'lmv' = pointer events forward to the model (selection, measure, section
+	// tools); 'map' = MapLibre owns all input. The camera stays MapLibre-owned
+	// in both modes.
+	setInteractionMode: (mode: LmvInteractionMode) => void;
+	// Streetwalk walking camera (WASD + mouse-look) — a MapLibre camera mode.
+	setWalkMode: (enabled: boolean) => void;
+	isWalkModeActive: () => boolean;
 };
 
 // ── Matrix helpers ────────────────────────────────────────────
@@ -153,6 +161,49 @@ function computeModelSpaceEyePosition(
 	];
 }
 
+/**
+ * Remap the near plane of the combined view-projection matrix.
+ *
+ * The combined matrix inherits MapLibre's near/far (nearZ ≈ canvas height/50
+ * world-pixels — several meters at site zooms), so LMV geometry vanishes in
+ * AABB-sized chunks whenever the camera gets close to the building. MapLibre
+ * needs that large near plane for tile depth precision, but LMV renders into
+ * its own FBO and presents with alpha blending (no shared depth with the
+ * basemap on a multisampled canvas), so the model can safely use a much
+ * tighter near plane.
+ *
+ * For two perspective matrices that differ only in near/far, P′·P⁻¹ collapses
+ * to a depth-scale D with D[10]=α, D[14]=β — exact, no inversion needed.
+ * Returns the input matrix unchanged if the source near/far look wrong.
+ */
+const LMV_NEAR_Z_PX = 1; // world-pixels ≈ 0.1–0.5 m at typical site zooms
+
+function remapNearPlane(
+	matrix: Float64Array,
+	nearZ: number,
+	farZ: number
+): Float64Array {
+	if (!(nearZ > 0) || !(farZ > nearZ)) return matrix;
+	const near = Math.min(LMV_NEAR_Z_PX, nearZ);
+	const far = farZ;
+	if (Math.abs(near - nearZ) < 1e-6) return matrix;
+
+	const A = (farZ + nearZ) / (nearZ - farZ);
+	const B = (2 * farZ * nearZ) / (nearZ - farZ);
+	const A2 = (far + near) / (near - far);
+	const B2 = (2 * far * near) / (near - far);
+	const alpha = B2 / B;
+	const beta = alpha * A - A2;
+
+	const depthScale = new Float64Array([
+		1, 0, 0, 0,
+		0, 1, 0, 0,
+		0, 0, alpha, 0,
+		0, 0, beta, 1
+	]);
+	return multiplyMatrix4Float64(depthScale, matrix);
+}
+
 /** Clean up WebGL state that LMV's R71 resetGLState does not touch. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function restoreSharedWebGLState(
@@ -188,11 +239,15 @@ function restoreSharedWebGLState(
 export function createLmvBridge({
 	container,
 	modelPlacement,
-	onStatus = () => {}
+	onStatus = () => {},
+	onInteractionMode = () => {}
 }: {
 	container: HTMLElement;
 	modelPlacement: ModelPlacement;
 	onStatus?: (message: string) => void;
+	// Fires whenever the interaction mode flips — including auto-switch from
+	// the measure/section/explode tools — so the app store stays in sync.
+	onInteractionMode?: (mode: LmvInteractionMode) => void;
 }): LmvBridge {
 	let map: maplibregl.Map | null = null;
 	let mapCanvas: HTMLCanvasElement;
@@ -222,6 +277,20 @@ export function createLmvBridge({
 			if (viewerReady) return;
 			map = mapInstance;
 			mapCanvas = mapInstance.getCanvas();
+
+			// Streetwalk camera: patch this map's transform so the walking cam
+			// can inject a first-person view matrix (stock maplibre-gl has no
+			// setCustomViewMatrix — the patch adds it, ported from
+			// wallabyway/streetwalk-gl's patched build).
+			ensureCustomViewMatrixPatch(mapInstance);
+			walkingCam = new WalkingCam(mapInstance, {
+				onDisabled: () => {
+					if (!walkModeActive) return;
+					walkModeActive = false;
+					cameraControlsExtension?.setActiveMode?.('map');
+				}
+			});
+
 			viewerReady = initializeViewer();
 		},
 
@@ -238,14 +307,23 @@ export function createLmvBridge({
 			}
 
 			const renderer = viewer.impl.glrenderer();
+
+			// MapLibre always owns the camera — pin LMV's render to the combined
+			// MapLibre view-projection. This holds in walk mode too: the walking
+			// camera injects its view matrix into MapLibre's transform itself
+			// (custom-view-matrix patch), so mainMatrix already tracks it.
 			const combinedMatrix = computeCombinedModelProjectionMatrix({
 				map: map as maplibregl.Map,
 				// eslint-disable-next-line @typescript-eslint/no-explicit-any
 				mainMatrix: (args as any).defaultProjectionData.mainMatrix,
 				placement: currentPlacement
 			});
-
-			applyMapLibreCameraTransform(combinedMatrix);
+			// Loosen the near plane for LMV only — see remapNearPlane().
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			const renderArgs = args as any;
+			applyMapLibreCameraTransform(
+				remapNearPlane(combinedMatrix, renderArgs.nearZ, renderArgs.farZ)
+			);
 
 			renderer.resetGLState();
 			renderer.setViewport(0, 0, mapCanvas.clientWidth, mapCanvas.clientHeight);
@@ -272,6 +350,7 @@ export function createLmvBridge({
 		(window as any).__lmvViewer = viewer;
 
 		configureViewerForMapLibre();
+		await ensureCameraControlsExtension();
 	}
 
 	function configureViewerForMapLibre(): void {
@@ -280,6 +359,7 @@ export function createLmvBridge({
 		patchLmvViewportToRay();
 		patchTransformControlsPicking();
 		bindMapPointerForwarding();
+		bindInteractionAutoSwitch();
 		viewer.impl.setRightBtnSelection(true);
 
 		viewer.setGhosting(false);
@@ -413,12 +493,14 @@ export function createLmvBridge({
 		// getWorldDirection()). With matrixWorld pinned to identity the stock
 		// getWorldDirection always returns (0,0,-1), so every pick ray shoots
 		// down the model's Z axis and hover/drag never engages. Return the
-		// true forward of the combined view instead.
+		// true forward of the combined view instead. Before the first pinned
+		// frame (combinedMatrix64 still null), defer to the stock version.
+		const stockGetWorldDirection = camera.getWorldDirection.bind(camera);
 		const worldForward = new THREE.Vector3();
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		camera.getWorldDirection = (target?: any) => {
+			if (!combinedMatrix64) return stockGetWorldDirection(target);
 			target ||= new THREE.Vector3();
-			if (!combinedMatrix64) return target.set(0, 0, -1);
 
 			combinedInverse.fromArray(combinedMatrix64).invert();
 			nearPoint.set(0, 0, -1).applyProjection(combinedInverse);
@@ -501,7 +583,7 @@ export function createLmvBridge({
 		return currentPlacement;
 	}
 
-	// Model loads must never overlap: two concurrent Snowdon loads interleave
+	// Model loads must never overlap: two concurrent loads interleave
 	// "unload all" with "add viewable" and leave untracked duplicate models
 	// behind. Chain every call onto the previous one, and skip the work
 	// entirely when the requested model is already in the viewer (the combo
@@ -519,20 +601,17 @@ export function createLmvBridge({
 			ready = false;
 			onStatus('Loading model...');
 			try {
+				const model = await loadLmvModel(viewer, urn);
 				if (urn === SNOWDON_MODEL_URN) {
-					// Construction-phasing model: five coordinated category
-					// viewables, each fed to the PhasingExtension tagged with its
-					// category.
+					// Construction-phasing model (Snowdon Towers Complete): single
+					// combined {3D} view; the engine buckets elements by their
+					// per-element 'Category' property.
 					const extension = await ensurePhasingExtension();
-					const models = await loadLmvPhasedModels(viewer, urn, SNOWDON_VIEWABLES);
 					if (extension) {
 						extension.resetForNewModel();
-						for (const { model, category } of models) {
-							extension.addModel(model, category);
-						}
+						extension.addModel(model);
 					}
 				} else {
-					await loadLmvModel(viewer, urn);
 					// A non-phasing site replaced the model — drop stale engine state.
 					phasingExtension?.resetForNewModel();
 				}
@@ -543,7 +622,7 @@ export function createLmvBridge({
 			}
 
 			await ensureVisualClustersExtension();
-			await ensureTransformExtension();
+			await ensureCameraControlsExtension(); // survives LMV's model-load teardown
 			ready = true;
 
 			onStatus('Model loaded');
@@ -558,12 +637,13 @@ export function createLmvBridge({
 	// lives in ViewerCanvas.svelte. Failures are logged, never fatal.
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	let phasingExtension: any = null;
-	let phasingRequested = false;
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	async function ensurePhasingExtension(): Promise<any> {
-		if (phasingExtension) return phasingExtension;
-		if (phasingRequested) return null;
-		phasingRequested = true;
+		// LMV's GuiViewer3D tears down ALL extensions when a model is loaded
+		// with keepCurrentModels:false over existing models — re-load if the
+		// cached instance fell out of the registry.
+		if (phasingExtension && viewer.getExtension('PhasingExtension')) return phasingExtension;
+		phasingExtension = null;
 		try {
 			const { registerPhasingExtension, PHASING_EXTENSION_ID } = await import(
 				'./phasing-extension/phasing-extension'
@@ -588,13 +668,15 @@ export function createLmvBridge({
 
 	// Loaded once, after the first model is in. Adds the "Visual Clusters"
 	// toggle to the LMV toolbar; activation stays with the user.
-	let visualClustersRequested = false;
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	let visualClustersExtension: any = null;
 	async function ensureVisualClustersExtension(): Promise<void> {
-		if (visualClustersRequested) return;
-		visualClustersRequested = true;
+		// Same teardown note as the phasing extension above.
+		if (visualClustersExtension && viewer.getExtension('Autodesk.VisualClusters')) return;
+		visualClustersExtension = null;
 		try {
-			const extension = await viewer.loadExtension('Autodesk.VisualClusters');
-			hookClusterAnimation(extension);
+			visualClustersExtension = await viewer.loadExtension('Autodesk.VisualClusters');
+			hookClusterAnimation(visualClustersExtension);
 		} catch (error) {
 			console.warn('[LMV] VisualClusters extension failed to load', error);
 		}
@@ -616,37 +698,86 @@ export function createLmvBridge({
 		}
 	}
 
-	// Loaded once, after the first model is in. Adds the "Transform Tools"
-	// (translate/rotate gizmos) to the LMV toolbar; activation stays with
-	// the user. Failures are logged, never fatal to model load.
-	let transformRequested = false;
-	async function ensureTransformExtension(): Promise<void> {
-		if (transformRequested) return;
-		transformRequested = true;
+	// Loaded once at viewer init. Adds the "Map camera / Walk camera" toggle
+	// pair to the LMV toolbar; selection drives setWalkMode/setInteractionMode.
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	let cameraControlsExtension: any = null;
+	async function ensureCameraControlsExtension(): Promise<void> {
+		// LMV's GuiViewer3D tears down ALL extensions when a model is loaded
+		// with keepCurrentModels:false over existing models — re-load if the
+		// cached instance fell out of the registry.
+		if (cameraControlsExtension && viewer.getExtension('CameraControlsExtension')) return;
+		cameraControlsExtension = null;
 		try {
-			const { registerTransformExtension, TRANSFORM_EXTENSION_ID } = await import(
-				'./transform-extension/transform-extension'
+			const { registerCameraControlsExtension, CAMERA_CONTROLS_EXTENSION_ID } = await import(
+				'./camera-controls-extension'
 			);
-			registerTransformExtension();
-			const extension = await viewer.loadExtension(TRANSFORM_EXTENSION_ID);
-			bindTransformToolForwarding(extension);
+			registerCameraControlsExtension();
+			cameraControlsExtension = await viewer.loadExtension(CAMERA_CONTROLS_EXTENSION_ID, {
+				onSelect: (mode: 'map' | 'walk') => selectCameraMode(mode)
+			});
+			cameraControlsExtension.setActiveMode(walkModeActive ? 'walk' : 'map');
 		} catch (error) {
-			console.warn('[LMV] Transform extension failed to load', error);
+			console.warn('[LMV] Camera-controls extension failed to load', error);
+		}
+		// No model loads at startup, so the toolbar may not have existed when
+		// the extension loaded and onToolbarCreated never ran. Once the toolbar
+		// is there (first model load), create the buttons ourselves.
+		if (
+			cameraControlsExtension &&
+			viewer.toolbar &&
+			!document.getElementById('camera-controls-map-button')
+		) {
+			try {
+				cameraControlsExtension.onToolbarCreated();
+			} catch (error) {
+				console.warn('[LMV] Camera-controls toolbar wiring failed', error);
+			}
+		}
+	}
+
+	// ── Streetwalk walking camera (a MapLibre camera mode) ──────
+	// The walking cam drives MapLibre's own camera via the custom-view-matrix
+	// patch; the LMV render stays pinned to MapLibre's matrices as usual, so
+	// the model follows the walk with no LMV-side camera work at all.
+	let walkingCam: WalkingCam | null = null;
+	let walkModeActive = false;
+
+	function setWalkMode(enabled: boolean): void {
+		if (enabled === walkModeActive) return;
+		walkModeActive = enabled;
+		if (enabled) {
+			setInteractionMode('map'); // walking owns the pointer (mouse-look)
+			walkingCam?.enable();
+		} else {
+			walkingCam?.disable();
+		}
+		cameraControlsExtension?.setActiveMode?.(enabled ? 'walk' : 'map');
+	}
+
+	function isWalkModeActive(): boolean {
+		return walkModeActive;
+	}
+
+	// Toolbar camera pair: 'walk' engages the streetwalk camera; 'map' returns
+	// to the standard MapLibre camera AND ends LMV interaction mode.
+	function selectCameraMode(mode: 'map' | 'walk'): void {
+		if (mode === 'walk') {
+			setWalkMode(true);
+		} else {
+			setWalkMode(false);
+			setInteractionMode('map');
 		}
 	}
 
 	// ── Pointer forwarding to the LMV canvas ──
-	// MapLibre owns the canvas by default. Two features need pointer events on
-	// the (hidden) LMV canvas instead: the translate/rotate gizmos (left-drag
-	// while a tool is active) and the header's "Interact with 3D model" toggle
-	// (LMV mode: all buttons, moves, clicks — everything except wheel, since
-	// the camera stays MapLibre-owned). While forwarding is on, map pan/rotate/
-	// double-click-zoom are suspended and mouse events on the map canvas
-	// container are re-dispatched to viewer.canvas with coordinates preserved,
-	// each followed by a repaint. Touch is not forwarded (pinch stays with
+	// MapLibre owns the canvas by default. LMV interaction mode re-dispatches
+	// mouse events on the map canvas container to the (hidden) LMV canvas —
+	// all buttons, moves, clicks; everything except wheel, since the camera
+	// stays MapLibre-owned. While forwarding is on, map pan/rotate/double-
+	// click-zoom are suspended. Touch is not forwarded (pinch stays with
 	// MapLibre; this demo is desktop-focused).
 	let lmvModeActive = false;
-	let transformToolsActive = false;
 	let forwardingActive = false;
 	const FORWARDED_EVENTS = ['mousedown', 'mousemove', 'mouseup', 'click', 'dblclick'] as const;
 
@@ -671,7 +802,7 @@ export function createLmvBridge({
 	}
 
 	function syncPointerForwarding(): void {
-		const shouldForward = lmvModeActive || transformToolsActive;
+		const shouldForward = lmvModeActive;
 		if (shouldForward === forwardingActive || !map) return;
 		forwardingActive = shouldForward;
 
@@ -694,46 +825,40 @@ export function createLmvBridge({
 		}
 	}
 
-	// LMV mode (header toggle): route all mouse interaction to the model. LMV
+	// LMV interaction mode: route mouse interaction to the model. LMV
 	// navigation is locked so left-drag becomes rubber-band selection instead
 	// of orbiting a camera the bridge pins every frame anyway.
-	function setInteractionMode(mode: 'map' | 'lmv'): void {
+	function setInteractionMode(mode: LmvInteractionMode): void {
 		const enabled = mode === 'lmv';
 		if (enabled === lmvModeActive) return;
 		lmvModeActive = enabled;
+		if (enabled) setWalkMode(false); // model interaction owns the pointer
 		viewer?.navigation?.setIsLocked?.(enabled);
 		if (map) map.getCanvas().style.cursor = enabled ? 'default' : '';
 		syncPointerForwarding();
+		onInteractionMode(mode);
 	}
 
-	// LMV 7's toolController emits no activation events, so wrap
-	// activateTool/deactivateTool and read the tools' `active` flags after
-	// each call (activation is synchronous in LMV; the microtask is cheap
-	// insurance in case that ever changes).
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	function bindTransformToolForwarding(extension: any): void {
+	// Measure, section, and explode all need LMV-side picking, so engaging any
+	// of them flips the bridge into LMV interaction mode. LMV 7's
+	// toolController emits no activation events, so wrap
+	// activateTool/deactivateTool; explode is itself a tool in LMV 7.
+	function bindInteractionAutoSwitch(): void {
 		const toolController = viewer?.toolController;
-		if (!toolController || toolController.__transformForwardingBound) return;
-		toolController.__transformForwardingBound = true;
+		if (!toolController || toolController.__interactionAutoSwitchBound) return;
+		toolController.__interactionAutoSwitchBound = true;
 
-		const update = () => {
-			transformToolsActive = !!(
-				extension?.translateTool?.active || extension?.rotateTool?.active
-			);
-			syncPointerForwarding();
+		const LMV_MODE_TOOLS = new Set(['measure', 'section', 'explode']);
+		const original = toolController.activateTool;
+		if (typeof original !== 'function') return;
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		toolController.activateTool = function (this: any, ...args: unknown[]) {
+			const result = original.apply(this, args);
+			if (LMV_MODE_TOOLS.has(args[0] as string)) {
+				setInteractionMode('lmv');
+			}
+			return result;
 		};
-
-		for (const fn of ['activateTool', 'deactivateTool'] as const) {
-			const original = toolController[fn];
-			if (typeof original !== 'function') continue;
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			toolController[fn] = function (this: any, ...args: unknown[]) {
-				const result = original.apply(this, args);
-				update();
-				void Promise.resolve().then(update);
-				return result;
-			};
-		}
 	}
 
 	function resizeLmvToMapCanvas(): void {
@@ -770,5 +895,14 @@ export function createLmvBridge({
 		// impl.tick rebuild the projection and corrupts the shared render).
 	}
 
-	return { layer, loadModel, setPlacement, getPlacement, getViewer: () => viewer, setInteractionMode };
+	return {
+		layer,
+		loadModel,
+		setPlacement,
+		getPlacement,
+		getViewer: () => viewer,
+		setInteractionMode,
+		setWalkMode,
+		isWalkModeActive
+	};
 }

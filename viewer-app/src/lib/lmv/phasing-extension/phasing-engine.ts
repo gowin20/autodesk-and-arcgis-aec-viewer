@@ -1,7 +1,9 @@
 /**
  * Phasing engine — TypeScript port of wallabyway/phase-lmv-extension
- * (ext/phasing.mjs). Level detection, phase construction, hide/theming, and
- * the fall-in animation via `fragList.updateAnimTransform`.
+ * (ext/phasing.mjs @ 949139d). Level detection, phase construction,
+ * isolate-based visibility/theming, and the fall-in animation (fragment
+ * transform manipulation; the 0..1000 slider drives the drop height
+ * directly — no tweening).
  *
  * Pure logic + viewer API; no DOM. Driven by PhasingExtension
  * (phasing-extension.ts).
@@ -9,6 +11,8 @@
  * Additions vs the original (MapLibre bridge integration):
  *  - `clearModels()` drops all per-model analysis state so a site switch
  *    (which unloads every model) leaves no stale buckets behind.
+ *  - `clearOverrides()` skips models that are no longer in the viewer
+ *    (dead model objects from a site switch throw inside LMV).
  *  - THREE is read lazily from window (SSR-safe module scope).
  */
 
@@ -18,10 +22,14 @@ export type PhaseColor = [number, number, number];
 
 export type PhasingConfig = {
 	dropHeight: number;
+	/** Conveyor-belt: how many parts are in flight at once (2 or 3). */
+	overlap?: number;
 	levelCategories: string[];
 	levelProps: string[];
 	roofLevels: string[];
 	colors: PhaseColor[];
+	/** Normalize Revit sub-categories onto their construction parent. */
+	categoryMap?: Record<string, string>;
 	byCategory: Array<{ id: string; name: string; short: string; color: PhaseColor; categories: string[] }>;
 };
 
@@ -33,8 +41,7 @@ export type Phase = {
 	end: number;
 	color: PhaseColor;
 	_lastStatus?: number;
-	_lastP?: number;
-	_drop?: boolean;
+	_lift?: number;
 };
 
 const three = (): any => (window as any).THREE;
@@ -100,14 +107,14 @@ export class PhasingEngine {
 
 	/* ---- analysis ---- */
 
-	addModel(model: any, category: string): void {
+	addModel(model: any, category?: string): void {
 		this._pending++;
 		this.analyze(model, category).finally(() => {
 			if (--this._pending === 0) this.finalize();
 		});
 	}
 
-	private async analyze(model: any, category: string): Promise<void> {
+	private async analyze(model: any, category?: string): Promise<void> {
 		const tree = await new Promise<any>((res, rej) => model.getObjectTree(res, rej));
 		this._trees.set(model, tree);
 		const dbids: number[] = [];
@@ -115,25 +122,24 @@ export class PhasingEngine {
 			if (tree.getChildCount(d) === 0) dbids.push(d);
 		}, true);
 
-		// level from Revit constraints (only categories that are phased by level)
-		const level = new Map<number, number | string | null>();
-		if (this._cfg && !this._catPhase.has(category)) {
-			const props = await new Promise<Map<number, Map<string, unknown>>>((res) => {
-				const map = new Map<number, Map<string, unknown>>();
-				model.getBulkProperties(dbids, { propFilter: this._cfg!.levelProps }, (r: any[]) => {
-					for (const p of r) {
-						const m = new Map<string, unknown>();
-						for (const pr of p.properties) {
-							const prev = m.get(pr.displayName);
-							m.set(pr.displayName, prev === undefined ? pr.displayValue : ([] as unknown[]).concat(prev as any, pr.displayValue));
-						}
-						map.set(p.dbId, m);
+		// per-element Revit category + level from constraints. With a combined
+		// model (single {3D} view) the category can no longer be tagged per
+		// model, so it comes from the element's 'Category' property; the model
+		// tag is only a fallback when the property is missing.
+		const props = await new Promise<Map<number, Map<string, unknown>>>((res) => {
+			const map = new Map<number, Map<string, unknown>>();
+			model.getBulkProperties(dbids, { propFilter: ['Category', ...(this._cfg?.levelProps ?? [])] }, (r: any[]) => {
+				for (const p of r) {
+					const m = new Map<string, unknown>();
+					for (const pr of p.properties) {
+						const prev = m.get(pr.displayName);
+						m.set(pr.displayName, prev === undefined ? pr.displayValue : ([] as unknown[]).concat(prev as any, pr.displayValue));
 					}
-					res(map);
-				}, () => res(map));
-			});
-			for (const d of dbids) level.set(d, this.resolve(props.get(d)));
-		}
+					map.set(p.dbId, m);
+				}
+				res(map);
+			}, () => res(map));
+		});
 
 		// world Z per element (for the height-based level guess below)
 		const box = new Array(6);
@@ -141,13 +147,19 @@ export class PhasingEngine {
 		this._modelZ.set(model, isFinite(box[0]) ? { min: box[2], max: box[5] } : null);
 		for (const d of dbids) {
 			tree.getNodeBox(d, box);
+			const pr = props.get(d);
+			let cat = pr ? ([] as unknown[]).concat(pr.get('Category') as any).find((v): v is string => typeof v === 'string') ?? null : null;
+			if (cat && this._cfg) {
+				cat = cat.replace(/^Revit\s+/i, ''); // LMV prefixes category values with 'Revit '
+				cat = (this._cfg.categoryMap && this._cfg.categoryMap[cat]) || cat;
+			}
 			this._entries.push({
-				model, category, dbid: d,
-				level: level.get(d) ?? null,
+				model, category: cat || category || 'Other', dbid: d,
+				level: pr ? this.resolve(pr) : null,
 				z: isFinite(box[0]) ? (box[2] + box[5]) / 2 : null
 			});
 		}
-		console.log(`[phasing] ${category}: ${dbids.length} elements`);
+		console.log(`[phasing] ${category || 'model'}: ${dbids.length} elements`);
 	}
 
 	// Parking -> 0, "L1 - Block 35" -> 1, roof-level names -> 'roof', else null
@@ -181,9 +193,9 @@ export class PhasingEngine {
 			return levels[i];
 		};
 
-		// phases: category-major (floors, then walls, then stairs), level-minor
+		// phases: category-major (structure, floors, walls, envelope, stairs, doors), level-minor
 		const cats = this._cfg.levelCategories;
-		const all: Array<Omit<Phase, 'start' | 'end'>> = [];
+		let all: Array<Omit<Phase, 'start' | 'end'>> = [];
 		for (let ci = 0; ci < cats.length; ci++) {
 			for (const lv of levels) {
 				all.push({
@@ -195,10 +207,10 @@ export class PhasingEngine {
 			}
 		}
 		for (const p of this._cfg.byCategory) all.push(p);
-		const span = 100 / all.length;
-		this._phases = all.map((p, i) => ({ ...p, start: i * span, end: (i + 1) * span }));
-		this._phaseById = new Map(this._phases.map((p) => [p.id, p]));
 
+		// bucket by per-element category: level categories drop level by level,
+		// roof/finishes via their static phase, everything else goes to 'other'
+		// (appended at the end of the belt only if it has any elements)
 		this._buckets = new Map();
 		const push = (pid: string, model: any, dbid: number) => {
 			if (!this._buckets.has(pid)) this._buckets.set(pid, new Map());
@@ -206,11 +218,36 @@ export class PhasingEngine {
 			if (!m.has(model)) m.set(model, []);
 			m.get(model)!.push(dbid);
 		};
+		let sawOther = false;
 		for (const e of this._entries) {
+			const cat = e.category;
 			const lv = e.level === 'roof' ? null : (e.level ?? band(e));
-			const pid = this._catPhase.get(e.category) || (lv === null ? 'roof' : e.category.toLowerCase() + '-' + lv);
+			let pid: string;
+			if (this._catPhase.has(cat)) pid = this._catPhase.get(cat)!;
+			else if (lv === null) pid = 'roof';
+			else if (cats.includes(cat)) pid = cat.toLowerCase() + '-' + lv;
+			else { pid = 'other'; sawOther = true; }
 			push(pid, e.model, e.dbid);
 		}
+		if (sawOther) {
+			all.push({ id: 'other', name: 'Other', short: 'Other', color: [110, 110, 110] });
+		}
+		// drop phases that ended up with no elements — no dead slots on the belt
+		all = all.filter((p) => this._buckets.has(p.id));
+
+		// Conveyor-belt timeline: a new part appears every `step` units, but each
+		// part stays in flight for `overlap` steps, so several parts hang and fall
+		// simultaneously (exactly `overlap` of them at any interior time). The
+		// last part lands exactly at t=100.
+		const overlap = this._cfg.overlap ?? 2;
+		const step = 100 / (all.length - 1 + overlap);
+		this._phases = all.map((p, i) => ({
+			...p,
+			start: i * step,
+			end: i * step + overlap * step,
+			_lift: 0 // current visual lift (last applied drop height)
+		}));
+		this._phaseById = new Map(this._phases.map((p) => [p.id, p]));
 		console.log('[phasing]', this._phases.map((p) => p.short).join(' '));
 
 		this._statusKey = null;
@@ -225,81 +262,119 @@ export class PhasingEngine {
 	progress(p: Phase, t: number): number {
 		return Math.min(1, Math.max(0, (t - p.start) / (p.end - p.start)));
 	}
+	// ease-out (cubic): parts drop quickly at first, then settle gently into place
+	private easeOut(u: number): number {
+		return 1 - Math.pow(1 - u, 3);
+	}
+	// Target lift (hanging height) of a phase at time t; 0 = settled on the floor.
+	private liftTarget(p: Phase, t: number): number {
+		return this.statusOf(p, t) === 1 ? (1 - this.easeOut(this.progress(p, t))) * (this._cfg?.dropHeight ?? 0) : 0;
+	}
 
-	// Called on every slider input: render when the phase status set changes,
-	// and keep the in-progress phase's drop height in sync with t.
+	// Called on every slider input: rebuild the isolated visible set and reapply
+	// theming when the phase status set changes, then move every in-flight phase's
+	// lift exactly where t puts it. The 0..1000 slider stepping makes the fall
+	// smooth — no tweening.
 	update(t: number): void {
 		const key = this._phases.map((p) => this.statusOf(p, t)).join('');
-		if (key !== this._statusKey) {
-			this._statusKey = key;
-			this.render(t);
-		}
-		const cur = this._phases.find((p) => p.start <= t && t < p.end);
-		if (cur) {
-			const p = this.progress(cur, t);
-			if (p !== cur._lastP) {
-				cur._lastP = p;
-				this.drop(cur, p);
-				this.viewer.impl.invalidate(true);
-			}
+		const keyChanged = key !== this._statusKey;
+		if (keyChanged) this._statusKey = key;
+		// Always re-apply visibility via isolate(); LMV state can drift while
+		// scrubbing (new fragments stream, isolation state is shared, etc.), so
+		// relying only on the status key lets geometry leak when scrubbing back
+		// to an earlier slider position.
+		this.render(t, keyChanged);
+		for (const p of this._phases) {
+			const target = this.liftTarget(p, t);
+			if (p._lift === target) continue;
+			// skip sub-step jitter mid-curve, but NEVER when settling: the eased
+			// tail moves < 0.5 units per step, so target 0 must always land exactly
+			if (target !== 0 && Math.abs((p._lift ?? 0) - target) < 0.5) continue;
+			p._lift = target;
+			this._applyLift(p, target);
 		}
 	}
 
-	render(t: number): void {
+	render(t: number, applyTheming: boolean): void {
+		// Build the set of dbIds that should be visible at this t, per model.
+		// viewer.isolate() is the renderer's own "source of truth" visibility call:
+		// it hides every fragment except the isolated set in one shot. This avoids
+		// the SVF2 visibility-manager race that could leave furniture/windows/etc.
+		// drawn at t=0 when viewer.hide() was issued before all fragments streamed.
+		const visibleByModel = new Map<any, Set<number>>();
 		for (const [pid, byModel] of this._buckets) {
 			const p = this._phaseById.get(pid);
 			if (!p) continue;
 			const s = this.statusOf(p, t);
-			if (s === p._lastStatus) continue;
-			p._lastStatus = s;
+			const statusChanged = s !== p._lastStatus;
+			if (statusChanged) p._lastStatus = s;
+			const [r, g, b] = p.color;
+			const c = s === 0 ? null : new (three().Vector4)(r / 255, g / 255, b / 255, s === 2 ? 0.35 : 1);
 			for (const [model, dbids] of byModel) {
-				if (model.isLoadDone && !model.isLoadDone()) continue;
-				try {
-					if (s === 0) {
-						this.viewer.hide(dbids, model);
-					} else {
-						this.viewer.show(dbids, model);
-						const [r, g, b] = p.color;
-						const c = new (three().Vector4)(r / 255, g / 255, b / 255, s === 2 ? 0.35 : 1);
+				if (!visibleByModel.has(model)) visibleByModel.set(model, new Set());
+				if (s !== 0) {
+					const visible = visibleByModel.get(model)!;
+					for (const d of dbids) visible.add(d);
+				}
+				if (applyTheming && statusChanged) {
+					try {
 						for (const d of dbids) model.setThemingColor(d, c);
+					} catch (err: any) {
+						console.warn('[phasing] theming', pid, err?.message);
 					}
-				} catch (err: any) {
-					console.warn('[phasing]', pid, err?.message);
 				}
 			}
-			if (s === 1) this.drop(p, this.progress(p, t));
-			else if (p._drop) this.drop(p, null);
+		}
+		for (const [model, visible] of visibleByModel) {
+			try {
+				this.viewer.isolate([...visible], model);
+			} catch (err: any) {
+				console.warn('[phasing] isolate', err?.message);
+			}
 		}
 		this.viewer.impl.invalidate(true);
 	}
 
-	// lift (or reset) a phase's fragments; prog 0..1 -> lift = (1-prog) * dropHeight
-	private drop(p: Phase, prog: number | null): void {
-		if (!this._cfg) return;
-		const reset = prog == null;
+	/* ---- fall-in animation ----
+	 * The slider drives the drop height directly (0..1000 steps = ~1% of
+	 * dropHeight per step, so the fall is smooth without tweening). */
+
+	// Set a phase's fragments to the given lift (z offset above their resting place).
+	private _applyLift(p: Phase, z: number): void {
+		this.pos.set(0, 0, z);
 		const byModel = this._buckets.get(p.id) || new Map();
-		this.pos.set(0, 0, reset ? 0 : (1 - prog) * this._cfg.dropHeight);
 		for (const [model, dbids] of byModel) {
+			// NOTE: no isLoadDone() guard here — SVF2 models can report false
+			// even when fully rendered, and the transform is harmless to apply.
 			const fl = model.getFragmentList();
 			const tree = this._trees.get(model);
 			if (!fl || !fl.updateAnimTransform || !tree) continue;
 			for (const d of dbids) {
 				// NOTE: the SVF2 fragment list has no dbId2fragId map — enumerate
 				// the node's fragments through the instance tree instead.
-				tree.enumNodeFragments(d, (f: number) => {
-					if (reset) fl.updateAnimTransform(f);
-					else fl.updateAnimTransform(f, null, null, this.pos);
-				});
+				tree.enumNodeFragments(d, (f: number) => fl.updateAnimTransform(f, null, null, this.pos));
 			}
 		}
-		p._drop = !reset;
+		this.viewer.impl.invalidate(true);
+	}
+
+	// Remove the anim transform entirely (original position).
+	private _resetLift(p: Phase): void {
+		const byModel = this._buckets.get(p.id) || new Map();
+		for (const [model, dbids] of byModel) {
+			const fl = model.getFragmentList();
+			const tree = this._trees.get(model);
+			if (!fl || !fl.updateAnimTransform || !tree) continue;
+			for (const d of dbids) tree.enumNodeFragments(d, (f: number) => fl.updateAnimTransform(f));
+		}
+		this.viewer.impl.invalidate(true);
 	}
 
 	clearOverrides(): void {
 		for (const p of this._phases) {
 			p._lastStatus = undefined;
-			p._lastP = undefined;
-			if (p._drop) this.drop(p, null); // restore fragment transforms
+			p._lift = 0;
+			this._resetLift(p); // restore fragment transforms
 		}
 		// On a site switch the old models are already unloaded — skip them, or
 		// clearThemingColors/show throw on the dead model objects.
@@ -314,6 +389,13 @@ export class PhasingEngine {
 					console.warn('[phasing] clearOverrides', err?.message);
 				}
 			}
+		}
+		// Fully exit isolation mode so the next bar activation starts from a
+		// clean "everything visible" state.
+		try {
+			if (live.size && this.viewer.showAll) this.viewer.showAll();
+		} catch (err: any) {
+			console.warn('[phasing] clearOverrides showAll', err?.message);
 		}
 		this._statusKey = null;
 		this.viewer.impl.invalidate(true);

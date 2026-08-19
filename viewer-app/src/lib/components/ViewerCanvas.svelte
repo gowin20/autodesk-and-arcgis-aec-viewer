@@ -225,7 +225,10 @@
 							rotationDeg: 30,
 							unitScale: 0.3048
 						}),
-						onStatus: (message) => (lmvStatus = message)
+						onStatus: (message) => (lmvStatus = message),
+						// Keep the interaction store in sync when the bridge
+						// auto-switches (measure/section/explode tools).
+						onInteractionMode: (mode) => lmvInteractionEnabled.set(mode === 'lmv')
 					});
 
 					// Debug hooks (used by the browser probes).

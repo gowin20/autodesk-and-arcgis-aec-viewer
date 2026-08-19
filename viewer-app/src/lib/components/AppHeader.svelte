@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { lmvInteractionEnabled } from '$lib/state/lmv-interaction';
 	import { loadSiteCatalog, selectedSiteId, siteCatalog } from '$lib/state/site-catalog';
 
 	let catalogError = $state<string | null>(null);
@@ -43,15 +42,6 @@
 			{/each}
 		</calcite-select>
 	{/if}
-	<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-	<calcite-action
-		slot="content-end"
-		icon="cube"
-		text="Interact with 3D model"
-		text-enabled
-		active={$lmvInteractionEnabled}
-		onclick={() => lmvInteractionEnabled.update((enabled) => !enabled)}
-	></calcite-action>
 </calcite-navigation>
 
 <style>
