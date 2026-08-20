@@ -1,4 +1,5 @@
 import { writable } from 'svelte/store';
+import { base } from '$app/paths';
 import type { FeatureCollection } from 'geojson';
 
 export type Site = {
@@ -31,7 +32,7 @@ let geojsonPromise: Promise<FeatureCollection> | null = null;
  * outline geometry share a single fetch.
  */
 function fetchSiteGeojson(): Promise<FeatureCollection> {
-	geojsonPromise ??= fetch('/site_outlines.geojson')
+	geojsonPromise ??= fetch(`${base}/site_outlines.geojson`)
 		.then((resp) => {
 			if (!resp.ok) throw new Error(`Failed to load site catalog: ${resp.status}`);
 			return resp.json();

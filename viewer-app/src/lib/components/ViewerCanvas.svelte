@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { get } from 'svelte/store';
+	import { base } from '$app/paths';
 	import type {
 		ErrorEvent,
 		GeoJSONSource,
@@ -1108,7 +1109,7 @@
 			<span
 				class="basemap-toggle-thumbnail"
 				aria-hidden="true"
-				style={`background-image: url('${isSatelliteBasemapActive ? '/thumbnail_imagery.png' : '/thumbnail_basemap.png'}');`}
+				style={`background-image: url('${base}${isSatelliteBasemapActive ? '/thumbnail_imagery.png' : '/thumbnail_basemap.png'}');`}
 			></span>
 		</button>
 	{/if}

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { base } from '$app/paths';
 	import { DEFAULT_BASEMAP_STYLE, selectedBasemapStyle } from '$lib/state/basemap-style';
 	import { selectedSiteId, siteCatalog } from '$lib/state/site-catalog';
 	import {
@@ -136,7 +137,7 @@
 					<span
 						class="site-card-thumbnail"
 						aria-hidden="true"
-						style={site.thumbnail ? `background-image: url('/${site.thumbnail}');` : ''}
+						style={site.thumbnail ? `background-image: url('${base}/${site.thumbnail}');` : ''}
 					></span>
 					<span class="site-card-label">{site.name}</span>
 				</button>
