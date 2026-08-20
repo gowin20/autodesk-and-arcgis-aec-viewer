@@ -8,6 +8,7 @@
 
 	/* Keep brand centralized across modes */
 	--calcite-color-brand: var(--app-brand);
+	--calcite-color-status-info: #FFFE00;
 
 	font-family: var(--calcite-sans-family);
 	color: var(--calcite-color-text-1);

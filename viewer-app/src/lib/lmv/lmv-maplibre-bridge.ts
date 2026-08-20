@@ -28,6 +28,8 @@ export type ModelPlacement = ReturnType<typeof createMercatorModelPlacement>;
 export type LmvBridge = {
 	layer: maplibregl.CustomLayerInterface;
 	loadModel: (urn: string) => Promise<void>;
+	unloadModel: () => Promise<void>;
+	setModelPlacement: (placement: ModelPlacement) => void;
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	getViewer: () => any;
 };
@@ -154,7 +156,7 @@ function restoreSharedWebGLState(
  */
 export function createLmvBridge({
 	container,
-	modelPlacement,
+	modelPlacement: initialModelPlacement,
 	onStatus = () => {}
 }: {
 	container: HTMLElement;
@@ -165,8 +167,12 @@ export function createLmvBridge({
 	let mapCanvas: HTMLCanvasElement;
 	let viewer: AnyViewer = null;
 	let ready = false;
+	let loadingModel = false;
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	let loadedModel: any = null;
 	let viewerReady: Promise<void> | null = null; // set in onAdd; awaited by loadModel
 	let combinedMatrix64: Float64Array | null = null;
+	let modelPlacement = initialModelPlacement;
 
 	// THREE is only available after the viewer3D CDN script has run — capture
 	// lazily at bridge-creation time (called from onMount), never at import.
@@ -197,7 +203,9 @@ export function createLmvBridge({
 			if (!ready) {
 				viewer.impl.tick(performance.now());
 				restoreSharedWebGLState(gl as WebGL2RenderingContext, viewer.impl.glrenderer());
-				map?.triggerRepaint();
+				if (loadingModel) {
+					map?.triggerRepaint();
+				}
 				return;
 			}
 
@@ -378,14 +386,50 @@ export function createLmvBridge({
 	}
 
 	async function loadModel(urn: string): Promise<void> {
+		if (!viewerReady) {
+			throw new Error('LMV layer is not ready yet. Add the bridge layer before loading a model.');
+		}
 		await viewerReady;
 
+		if (loadedModel) {
+			return;
+		}
+
 		ready = false;
+		loadingModel = true;
 		onStatus('Loading model...');
-		await loadLmvModel(viewer, urn);
+		loadedModel = await loadLmvModel(viewer, urn);
+		loadingModel = false;
 		ready = true;
 
 		onStatus('Model loaded');
+		map?.triggerRepaint();
+	}
+
+	async function unloadModel(): Promise<void> {
+		if (!viewerReady) {
+			return;
+		}
+		await viewerReady;
+
+		ready = false;
+		loadingModel = false;
+		if (!loadedModel) {
+			onStatus('Model hidden');
+			map?.triggerRepaint();
+			return;
+		}
+
+		if (typeof viewer.unloadModel === 'function') {
+			viewer.unloadModel(loadedModel);
+		} else if (typeof viewer.impl?.unloadModel === 'function') {
+			viewer.impl.unloadModel(loadedModel);
+		} else {
+			throw new Error('LMV viewer does not expose an unloadModel API.');
+		}
+
+		loadedModel = null;
+		onStatus('Model hidden');
 		map?.triggerRepaint();
 	}
 
@@ -420,5 +464,10 @@ export function createLmvBridge({
 		camera.matrixWorldInverse.identity();
 	}
 
-	return { layer, loadModel, getViewer: () => viewer };
+	function setModelPlacement(placement: ModelPlacement): void {
+		modelPlacement = placement;
+		map?.triggerRepaint();
+	}
+
+	return { layer, loadModel, unloadModel, setModelPlacement, getViewer: () => viewer };
 }

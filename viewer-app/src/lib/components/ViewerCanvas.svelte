@@ -18,6 +18,7 @@
 	import {
 		addElevationResultViewerLayer,
 		projectLayersVisible,
+		resetViewerLayersForSite,
 		type ElevationResultViewerLayer,
 		type GeocodeResultViewerLayer,
 		type RoutingResultViewerLayer,
@@ -40,6 +41,8 @@
 		routePlannerMapPickedPoint,
 		routePlannerMapPickTargetId
 	} from '$lib/state/routing-stops';
+	import { currentSite, type SiteDefinition } from '$lib/state/sites';
+	import { autodeskModelEnabled } from '$lib/state/autodesk-model';
 	import { createLmvBridge, createMercatorModelPlacement } from '$lib/lmv/lmv-maplibre-bridge';
 	import 'maplibre-gl/dist/maplibre-gl.css';
 
@@ -56,11 +59,6 @@
 	let lmvStatus = $state<string | null>(null);
 	let isSatelliteBasemapActive = $state(false);
 
-	// Office.rvt on the APS sample server, geo-pinned at Brownsville, PA.
-	const DEFAULT_LMV_URN =
-		'dXJuOmFkc2sub2JqZWN0czpvcy5vYmplY3Q6c2FtcGxlbW9kZWxzL09mZmljZS5ydnQ=';
-	const MODEL_ORIGIN: [number, number] = [-79.88666527, 40.022371938];
-
 	const getErrorMessage = (error: unknown): string =>
 		error instanceof Error ? error.message : 'Map failed to load.';
 	const toggleBasemapOverlay = () => {
@@ -75,6 +73,8 @@
 			mapError = 'Map container is unavailable.';
 			return;
 		}
+		const initialSite = get(currentSite);
+		let activeSite = initialSite;
 
 		void (async () => {
 			try {
@@ -89,7 +89,7 @@
 					// blocking the whole viewer (ArcGIS basemap switching stays off).
 					...(hasArcgisToken ? {} : { style: 'https://tiles.openfreemap.org/styles/bright' }),
 					zoom: 18,
-					center: MODEL_ORIGIN,
+					center: initialSite.coordinates,
 					pitch: 60,
 					maxPitch: 85,
 					attributionControl: false,
@@ -100,7 +100,8 @@
 				// MapLibre owns the camera/frame loop; LMV renders into the shared
 				// WebGL context via a custom layer. Failures here must never break
 				// the ArcGIS app, so everything is guarded.
-				let lmvModelStarted = false;
+				let unsubscribeAutodeskModelEnabled = () => {};
+				let syncLmvSiteModel = (_site: SiteDefinition) => {};
 				try {
 					if (!lmvContainer) {
 						throw new Error('LMV container is unavailable.');
@@ -108,7 +109,7 @@
 					const bridge = createLmvBridge({
 						container: lmvContainer,
 						modelPlacement: createMercatorModelPlacement({
-							origin: MODEL_ORIGIN,
+							origin: initialSite.coordinates,
 							altitude: 10,
 							rotationDeg: 30,
 							unitScale: 0.3048
@@ -119,6 +120,52 @@
 					// Debug hooks (used by the browser probes).
 					(window as unknown as Record<string, unknown>).__map = map;
 					(window as unknown as Record<string, unknown>).__lmvBridge = bridge;
+					let lmvLayerAttached = false;
+					let pendingModelSync = false;
+					let lmvModelSyncQueue: Promise<void> = Promise.resolve();
+					let currentModelEnabled = get(autodeskModelEnabled);
+					let currentSiteForModel = activeSite;
+					let activeLoadedSiteId: string | null = null;
+
+					const syncLmvModelVisibility = () => {
+						lmvModelSyncQueue = lmvModelSyncQueue
+							.then(async () => {
+								if (!currentModelEnabled) {
+									await bridge.unloadModel();
+									activeLoadedSiteId = null;
+									return;
+								}
+
+								if (activeLoadedSiteId !== currentSiteForModel.id) {
+									await bridge.unloadModel();
+									bridge.setModelPlacement(
+										createMercatorModelPlacement({
+											origin: currentSiteForModel.coordinates,
+											altitude: 10,
+											rotationDeg: 30,
+											unitScale: 0.3048
+										})
+									);
+									await bridge.loadModel(currentSiteForModel.modelUrn);
+									activeLoadedSiteId = currentSiteForModel.id;
+									return;
+								}
+
+								await bridge.loadModel(currentSiteForModel.modelUrn);
+							})
+							.catch((error: unknown) => {
+								console.error('[LMV] Model visibility sync failed', error);
+								lmvStatus =
+									error instanceof Error ? error.message : 'LMV model visibility update failed.';
+							});
+					};
+					const requestLmvModelVisibility = () => {
+						if (!lmvLayerAttached) {
+							pendingModelSync = true;
+							return;
+						}
+						syncLmvModelVisibility();
+					};
 
 					const ensureLmvLayer = () => {
 						if (!map) return;
@@ -127,16 +174,22 @@
 						if (!map.getLayer('lmv-model')) {
 							map.addLayer(bridge.layer);
 						}
-						if (!lmvModelStarted) {
-							lmvModelStarted = true;
-							void bridge.loadModel(DEFAULT_LMV_URN).catch((error: unknown) => {
-								console.error('[LMV] Model load failed', error);
-								lmvStatus = 'LMV model failed to load.';
-							});
+						lmvLayerAttached = true;
+						if (pendingModelSync) {
+							pendingModelSync = false;
+							syncLmvModelVisibility();
 						}
 					};
 					map.on('style.load', ensureLmvLayer);
 					if (map.isStyleLoaded()) ensureLmvLayer();
+					syncLmvSiteModel = (site: SiteDefinition) => {
+						currentSiteForModel = site;
+						requestLmvModelVisibility();
+					};
+					unsubscribeAutodeskModelEnabled = autodeskModelEnabled.subscribe((enabled) => {
+						currentModelEnabled = enabled;
+						requestLmvModelVisibility();
+					});
 				} catch (error) {
 					console.error('[LMV] Initialization failed', error);
 					lmvStatus = 'LMV viewer unavailable.';
@@ -792,12 +845,24 @@
 					map.flyTo({
 						center: [location.longitude, location.latitude],
 						zoom: Math.max(map.getZoom(), 16),
-						essential: true
+						essential: true,
+						maxDuration: 1000
 					});
 				});
 				const unsubscribeRoutePlannerLocations = routePlannerLocations.subscribe((locations) => {
 					activeRoutePlannerLocations = locations;
 					syncRoutePlannerRender();
+				});
+				const unsubscribeCurrentSite = currentSite.subscribe((site) => {
+					activeSite = site;
+					resetViewerLayersForSite(site.coordinates);
+					syncLmvSiteModel(site);
+					if (!map) return;
+					map.flyTo({
+						center: site.coordinates,
+						zoom: Math.max(map.getZoom(), 16),
+						essential: true
+					});
 				});
 				const updateMapCenter = () => {
 					if (!map) return;
@@ -868,7 +933,9 @@
 					unsubscribeElevationQueryEnabled();
 					unsubscribeSelectedSearchLocation();
 					unsubscribeRoutePlannerLocations();
+					unsubscribeCurrentSite();
 					unsubscribeRoutePlannerMapPickTargetId();
+					unsubscribeAutodeskModelEnabled();
 				});
 			} catch (error) {
 				mapError = getErrorMessage(error);

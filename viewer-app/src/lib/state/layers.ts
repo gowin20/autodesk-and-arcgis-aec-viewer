@@ -1,8 +1,9 @@
 import type { GeoJSONSourceSpecification } from 'maplibre-gl';
-import { writable } from 'svelte/store';
+import { get, writable } from 'svelte/store';
 import { CONTEXTUAL_LAYER_OPTIONS } from '$lib/state/contextual-layers';
+import { SITE_LOCATIONS, currentSite } from '$lib/state/sites';
 
-const DEFAULT_SITE_LOCATION_COORDINATES: [number, number] = [-79.88666527, 40.022371938];
+const DEFAULT_SITE_LOCATION_COORDINATES = SITE_LOCATIONS[0].coordinates;
 const SERVICE_AREA_VIEWER_LAYER_ID = 'service-area-layer';
 const SITE_LOCATION_VIEWER_LAYER_ID = 'site-location-layer';
 const GEOCODE_RESULT_VIEWER_LAYER_ID = 'geocode-result-layer';
@@ -70,16 +71,16 @@ export type ViewerLayer =
 	| ElevationResultViewerLayer
 	| RoutingResultViewerLayer;
 
-const createDefaultSiteLocationLayer = (): SiteLocationViewerLayer => ({
+const createSiteLocationLayer = (coordinates: [number, number]): SiteLocationViewerLayer => ({
 	id: SITE_LOCATION_VIEWER_LAYER_ID,
-	label: 'Site location',
+	label: 'Current site location marker',
 	kind: 'site-location',
 	visible: true,
-	longitude: DEFAULT_SITE_LOCATION_COORDINATES[0],
-	latitude: DEFAULT_SITE_LOCATION_COORDINATES[1]
+	longitude: coordinates[0],
+	latitude: coordinates[1]
 });
 
-export const viewerLayers = writable<ViewerLayer[]>([createDefaultSiteLocationLayer()]);
+export const viewerLayers = writable<ViewerLayer[]>([createSiteLocationLayer(DEFAULT_SITE_LOCATION_COORDINATES)]);
 export const projectLayersVisible = writable(true);
 
 export const addContextualViewerLayer = (contextualLayerId: string) => {
@@ -215,6 +216,11 @@ export const removeRoutingResultViewerLayer = () => {
 };
 
 export const resetViewerLayers = () => {
-	viewerLayers.set([createDefaultSiteLocationLayer()]);
+	viewerLayers.set([createSiteLocationLayer(get(currentSite).coordinates)]);
+	projectLayersVisible.set(true);
+};
+
+export const resetViewerLayersForSite = (coordinates: [number, number]) => {
+	viewerLayers.set([createSiteLocationLayer(coordinates)]);
 	projectLayersVisible.set(true);
 };
