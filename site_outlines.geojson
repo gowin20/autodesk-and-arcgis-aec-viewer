@@ -1,0 +1,270 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [-1.1401812380497915, 52.95242421926153]
+      },
+      "properties": {
+        "id": "nottingham-arena",
+        "name": "Motorpoint Arena Nottingham",
+        "kind": "pin",
+        "urn": "dXJuOmFkc2sub2JqZWN0czpvcy5vYmplY3Q6c2FtcGxlbW9kZWxzL2ljZS1zdGFkaXVtLm53ZA==",
+        "thumbnail": "docs/thumbs/nottingham-arena.png",
+        "bearingOffset": -80,
+        "modelRotationDeg": 102,
+        "modelScale": 3.280839895013123,
+        "modelAltitude": 0,
+        "modelOriginLon": -1.1397728,
+        "modelOriginLat": 52.9526817
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-1.1385353388062356, 52.951736617973296],
+            [-1.140597517203048, 52.951612203631925],
+            [-1.1409809864267118, 52.953518362146895],
+            [-1.1388137409895194, 52.95342578083722],
+            [-1.1385353388062356, 52.951736617973296]
+          ]
+        ]
+      },
+      "properties": {
+        "id": "nottingham-arena",
+        "name": "Motorpoint Arena Nottingham",
+        "kind": "outline",
+        "urn": "dXJuOmFkc2sub2JqZWN0czpvcy5vYmplY3Q6c2FtcGxlbW9kZWxzL2ljZS1zdGFkaXVtLm53ZA=="
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [86.0291661490848, 25.414964304851566]
+      },
+      "properties": {
+        "id": "india-facility",
+        "name": "Industrial Facility",
+        "kind": "pin",
+        "urn": "dXJuOmFkc2sub2JqZWN0czpvcy5vYmplY3Q6c2FtcGxlbW9kZWxzL2ZhY2lsaXR5Lm53ZA==",
+        "thumbnail": "docs/thumbs/india-facility.png",
+        "bearingOffset": 120,
+        "modelRotationDeg": 90,
+        "modelOriginLon": 86.0289718,
+        "modelOriginLat": 25.4133148
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [86.02854552869877, 25.414342980478125],
+          [86.02864017868347, 25.415077051413533],
+          [86.02972110845974, 25.4149125268585],
+          [86.0296031755912, 25.414219503633646],
+          [86.02855501799314, 25.414338388945964]
+        ]
+      },
+      "properties": {
+        "id": "india-facility",
+        "name": "Industrial Facility",
+        "kind": "outline",
+        "urn": "dXJuOmFkc2sub2JqZWN0czpvcy5vYmplY3Q6c2FtcGxlbW9kZWxzL2ZhY2lsaXR5Lm53ZA=="
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [12.22729, 51.839334]
+      },
+      "properties": {
+        "id": "bauhaus-dessau",
+        "name": "Bauhaus Building",
+        "kind": "pin",
+        "urn": "dXJuOmFkc2sub2JqZWN0czpvcy5vYmplY3Q6c2FtcGxlbW9kZWxzL3JhYy1hZHZhbmNlZC1zYW1wbGVwcm9qZWN0LnJ2dA==",
+        "thumbnail": "docs/thumbs/bauhaus-dessau.png",
+        "bearingOffset": 90,
+        "modelRotationDeg": 203,
+        "modelAltitude": 0
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [12.22532213704335, 51.83947557354014],
+            [12.227619091096955, 51.8400758841197],
+            [12.228271664691249, 51.83915296018969],
+            [12.226014102070678, 51.838548157087445],
+            [12.22532213704335, 51.83947557354014]
+          ]
+        ]
+      },
+      "properties": {
+        "id": "bauhaus-dessau",
+        "name": "Bauhaus Building",
+        "kind": "outline",
+        "urn": "dXJuOmFkc2sub2JqZWN0czpvcy5vYmplY3Q6c2FtcGxlbW9kZWxzL3JhYy1hZHZhbmNlZC1zYW1wbGVwcm9qZWN0LnJ2dA=="
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [20.149176, 44.713719]
+      },
+      "properties": {
+        "id": "sojenica-figo",
+        "name": "Sojenica figo",
+        "kind": "pin",
+        "urn": "dXJuOmFkc2sub2JqZWN0czpvcy5vYmplY3Q6c2FtcGxlbW9kZWxzL3JhYy1iYXNpYy1zYW1wbGVwcm9qZWN0LnJ2dA==",
+        "thumbnail": "docs/thumbs/sojenica-figo.png",
+        "bearingOffset": 40,
+        "modelRotationDeg": 75,
+        "modelAltitude": 5
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [20.14904072872577, 44.71360601682971],
+            [20.149236656774743, 44.713553518067215],
+            [20.149311271274232, 44.71383198317029],
+            [20.149115343225258, 44.71388448193278],
+            [20.14904072872577, 44.71360601682971]
+          ]
+        ]
+      },
+      "properties": {
+        "id": "sojenica-figo",
+        "name": "Sojenica figo",
+        "kind": "outline",
+        "urn": "dXJuOmFkc2sub2JqZWN0czpvcy5vYmplY3Q6c2FtcGxlbW9kZWxzL3JhYy1iYXNpYy1zYW1wbGVwcm9qZWN0LnJ2dA=="
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [15.440546952449552, 47.064184746683395]
+      },
+      "properties": {
+        "id": "innocad-graz",
+        "name": "INNOCAD architecture",
+        "kind": "pin",
+        "urn": "dXJuOmFkc2sub2JqZWN0czpvcy5vYmplY3Q6c2FtcGxlbW9kZWxzL2RhY2gtc2FtcGxlLXByb2plY3QucnZ0",
+        "thumbnail": "docs/thumbs/innocad-graz.png",
+        "bearingOffset": 180,
+        "modelRotationDeg": -36
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [15.441193855192381, 47.06438654357069],
+            [15.440037521726964, 47.06363906786703],
+            [15.439409443927303, 47.06414818433177],
+            [15.440602537278266, 47.06482153846915],
+            [15.441193855192381, 47.06438654357069]
+          ]
+        ]
+      },
+      "properties": {
+        "id": "innocad-graz",
+        "name": "INNOCAD architecture",
+        "kind": "outline",
+        "urn": "dXJuOmFkc2sub2JqZWN0czpvcy5vYmplY3Q6c2FtcGxlbW9kZWxzL2RhY2gtc2FtcGxlLXByb2plY3QucnZ0"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [4.393219828495461, 51.18354321818006]
+      },
+      "properties": {
+        "id": "office-rvt",
+        "name": "Office",
+        "kind": "pin",
+        "urn": "dXJuOmFkc2sub2JqZWN0czpvcy5vYmplY3Q6c2FtcGxlbW9kZWxzL09mZmljZS5ydnQ=",
+        "thumbnail": "docs/thumbs/office-rvt.png",
+        "bearingOffset": 180,
+        "modelRotationDeg": -18
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [4.393263935469093, 51.18351800728519],
+            [4.393130943302367, 51.18354016706451],
+            [4.393222034505953, 51.18373325186178],
+            [4.39335435486953, 51.183707961325666],
+            [4.393263935469093, 51.18351800728519]
+          ]
+        ]
+      },
+      "properties": {
+        "id": "office-rvt",
+        "name": "Office",
+        "kind": "outline",
+        "urn": "dXJuOmFkc2sub2JqZWN0czpvcy5vYmplY3Q6c2FtcGxlbW9kZWxzL09mZmljZS5ydnQ="
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [-79.8866010583132, 40.02225613776304]
+      },
+      "properties": {
+        "id": "snowdon-architectural",
+        "name": "Snowdon Towers (Complete)",
+        "kind": "pin",
+        "urn": "dXJuOmFkc2sub2JqZWN0czpvcy5vYmplY3Q6c2FtcGxlbW9kZWxzL1Nub3dkb24tVG93ZXItKENvbXBsZXRlKS5ydnQ=",
+        "thumbnail": "docs/thumbs/snowdon-architectural.png",
+        "bearingOffset": -30,
+        "modelRotationDeg": 30
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-79.88708206853444, 40.02236489698788],
+            [-79.88651162671792, 40.02259398604764],
+            [-79.88635970475322, 40.02243667337132],
+            [-79.88697010904546, 40.02218146348511],
+            [-79.88708206853444, 40.02236489698788]
+          ]
+        ]
+      },
+      "properties": {
+        "id": "snowdon-architectural",
+        "name": "Snowdon Towers (Complete)",
+        "kind": "outline",
+        "urn": "dXJuOmFkc2sub2JqZWN0czpvcy5vYmplY3Q6c2FtcGxlbW9kZWxzL1Nub3dkb24tVG93ZXItKENvbXBsZXRlKS5ydnQ="
+      }
+    }
+  ]
+}

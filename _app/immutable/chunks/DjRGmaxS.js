@@ -1,0 +1,1 @@
+var e=`dark`,t=e=>{if(typeof document>`u`)return;let t=document.documentElement;t.classList.remove(`calcite-mode-light`,`calcite-mode-dark`),t.classList.add(e===`dark`?`calcite-mode-dark`:`calcite-mode-light`)},n=e=>e===`dark`?`dark-theme`:`light-theme`;export{t as n,n as r,e as t};
