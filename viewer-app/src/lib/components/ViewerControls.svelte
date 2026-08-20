@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { DEFAULT_BASEMAP_STYLE, selectedBasemapStyle } from '$lib/state/basemap-style';
+	import { selectedSiteId, siteCatalog } from '$lib/state/site-catalog';
 	import {
 		CONTEXTUAL_LAYER_GROUPS,
 		CONTEXTUAL_LAYER_OPTIONS,
@@ -67,7 +68,7 @@
 			case 'service-area':
 				return 'Service area result';
 			case 'site-location':
-				return 'Default site marker';
+				return 'Current site marker';
 			case 'geocode-result':
 				return 'Geocoding result marker';
 			case 'elevation-result':
@@ -121,39 +122,26 @@
 
 <calcite-panel heading="Viewer controls" description="Configure the map display">
 	<calcite-block heading="View" description="Map presentation" open>
-		<calcite-label>
-			Display mode
-			<calcite-segmented-control width="full">
-				<calcite-segmented-control-item value="2d" checked>2D</calcite-segmented-control-item>
-				<calcite-segmented-control-item value="3d">3D</calcite-segmented-control-item>
-			</calcite-segmented-control>
-		</calcite-label>
-	</calcite-block>
-
-	<calcite-block heading="Basemap style" description="ArcGIS basemap styles" open>
-		{#if basemapLoadError}
-			<calcite-notice open kind="danger" icon>
-				<div slot="message">{basemapLoadError}</div>
-			</calcite-notice>
-		{:else if isLoadingBasemaps}
-			<calcite-notice open kind="info" icon>
-				<div slot="message">Loading ArcGIS basemap styles...</div>
-			</calcite-notice>
-		{:else}
-			<calcite-dropdown width="full" placement="bottom-start" close-on-select>
-				<calcite-button slot="trigger" width="full" appearance="outline">{getSelectedStyleLabel()}</calcite-button>
-				<calcite-dropdown-group group-title="ArcGIS Basemap Styles" selection-mode="single">
-					{#each basemapOptions as style}
-						<calcite-dropdown-item
-							selected={style.value === selectedStyleId}
-							onclick={() => selectBasemapStyle(style.value)}
-						>
-							{style.label}
-						</calcite-dropdown-item>
-					{/each}
-				</calcite-dropdown-group>
-			</calcite-dropdown>
-		{/if}
+		<div class="site-cards-grid">
+			{#each $siteCatalog as site}
+				<button
+					type="button"
+					class="site-card"
+					class:site-card-active={site.id === $selectedSiteId}
+					onclick={() => selectedSiteId.set(site.id)}
+					aria-pressed={site.id === $selectedSiteId}
+					aria-label={`Switch to ${site.name}`}
+					title={site.name}
+				>
+					<span
+						class="site-card-thumbnail"
+						aria-hidden="true"
+						style={site.thumbnail ? `background-image: url('/${site.thumbnail}');` : ''}
+					></span>
+					<span class="site-card-label">{site.name}</span>
+				</button>
+			{/each}
+		</div>
 	</calcite-block>
 
 	<calcite-block heading="ArcGIS data" description="Project data" open>
@@ -237,9 +225,82 @@
 		</calcite-button>
 	</calcite-block>
 
+	<calcite-block heading="Basemap style" description="ArcGIS basemap styles" open>
+		{#if basemapLoadError}
+			<calcite-notice open kind="danger" icon>
+				<div slot="message">{basemapLoadError}</div>
+			</calcite-notice>
+		{:else if isLoadingBasemaps}
+			<calcite-notice open kind="info" icon>
+				<div slot="message">Loading ArcGIS basemap styles...</div>
+			</calcite-notice>
+		{:else}
+			<calcite-dropdown width="full" placement="bottom-start" close-on-select>
+				<calcite-button slot="trigger" width="full" appearance="outline">{getSelectedStyleLabel()}</calcite-button>
+				<calcite-dropdown-group group-title="ArcGIS Basemap Styles" selection-mode="single">
+					{#each basemapOptions as style}
+						<calcite-dropdown-item
+							selected={style.value === selectedStyleId}
+							onclick={() => selectBasemapStyle(style.value)}
+						>
+							{style.label}
+						</calcite-dropdown-item>
+					{/each}
+				</calcite-dropdown-group>
+			</calcite-dropdown>
+		{/if}
+	</calcite-block>
+
 </calcite-panel>
 
 <style>
+	.site-cards-grid {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 0.75rem;
+	}
+
+	.site-card {
+		display: grid;
+		grid-template-rows: 1fr auto;
+		gap: 0.35rem;
+		padding: 0.5rem;
+		aspect-ratio: 1 / 1;
+		border: 1px solid var(--calcite-color-border-2);
+		border-radius: 0.5rem;
+		background: var(--calcite-color-surface-2);
+		color: var(--calcite-color-text-1);
+		cursor: pointer;
+	}
+
+	.site-card-active {
+		border-color: var(--calcite-color-brand);
+		box-shadow: 0 0 0 1px var(--calcite-color-brand);
+	}
+
+	.site-card:focus-visible {
+		outline: 2px solid var(--calcite-color-brand);
+		outline-offset: 2px;
+	}
+
+	.site-card-thumbnail {
+		display: block;
+		width: 100%;
+		height: 100%;
+		border-radius: 0.35rem;
+		border: 1px solid var(--calcite-color-border-2);
+		background-color: rgb(0 0 0 / 12%);
+		background-position: center;
+		background-repeat: no-repeat;
+		background-size: cover;
+	}
+
+	.site-card-label {
+		font-size: var(--calcite-font-size--2);
+		font-weight: var(--calcite-font-weight-medium);
+		text-align: left;
+	}
+
 	.layers-list-heading {
 		margin: 1rem 0 0.5rem;
 		font-size: var(--calcite-font-size--1);
