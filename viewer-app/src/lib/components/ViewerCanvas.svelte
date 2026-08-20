@@ -58,7 +58,6 @@
 	let lmvContainer: HTMLDivElement | undefined;
 	let map: MaplibreMap | undefined;
 	let mapError = $state<string | null>(null);
-	let lmvStatus = $state<string | null>(null);
 	let isSatelliteBasemapActive = $state(false);
 
 	// MapboxDraw instance (created in onMount once the map exists).
@@ -225,7 +224,10 @@
 							rotationDeg: 30,
 							unitScale: 0.3048
 						}),
-						onStatus: (message) => (lmvStatus = message),
+						onStatus: (message) => {
+							// Test/debug hook (the probes poll this instead of DOM chrome).
+							(window as unknown as Record<string, unknown>).__lmvStatus = message;
+						},
 						// Keep the interaction store in sync when the bridge
 						// auto-switches (measure/section/explode tools).
 						onInteractionMode: (mode) => lmvInteractionEnabled.set(mode === 'lmv')
@@ -264,10 +266,10 @@
 							});
 						}
 
-						lmvStatus = null;
 						void bridge.loadModel(site.urn).catch((error: unknown) => {
 							console.error('[LMV] Model load failed', error);
-							lmvStatus = 'LMV model failed to load.';
+							(window as unknown as Record<string, unknown>).__lmvStatus =
+								'LMV model failed to load.';
 						});
 					};
 
@@ -333,7 +335,7 @@
 					if (map.isStyleLoaded()) ensureLmvLayer();
 				} catch (error) {
 					console.error('[LMV] Initialization failed', error);
-					lmvStatus = 'LMV viewer unavailable.';
+					(window as unknown as Record<string, unknown>).__lmvStatus = 'LMV viewer unavailable.';
 				}
 
 				const basemapStyle = hasArcgisToken
@@ -1110,9 +1112,6 @@
 			></span>
 		</button>
 	{/if}
-	{#if lmvStatus && !mapError}
-		<div class="lmv-status" role="status">{lmvStatus}</div>
-	{/if}
 	{#if mapError}
 		<div class="status-message" role="alert">{mapError}</div>
 	{/if}
@@ -1195,20 +1194,6 @@
 	.map-host {
 		position: absolute;
 		inset: 0;
-	}
-
-	.lmv-status {
-		position: absolute;
-		top: 1rem;
-		inset-inline-start: 1rem;
-		z-index: 2;
-		padding: 0.35rem 0.75rem;
-		border-radius: 0.5rem;
-		background: var(--calcite-color-foreground-1);
-		color: var(--calcite-color-text-2);
-		font-size: var(--calcite-font-size--2);
-		box-shadow: 0 2px 8px rgb(0 0 0 / 12%);
-		pointer-events: none;
 	}
 
 	.status-message {
