@@ -233,7 +233,7 @@
       "type": "Feature",
       "geometry": {
         "type": "Point",
-        "coordinates": [-79.88678660929283, 40.02244901690008]
+        "coordinates": [-79.8866010583132, 40.02225613776304]
       },
       "properties": {
         "id": "snowdon-architectural",

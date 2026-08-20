@@ -16,8 +16,7 @@ import {
 	resolveLmvRendererClass,
 	createSharedLmvRenderer,
 	createStoppedLmvViewer,
-	loadLmvModel,
-	SNOWDON_MODEL_URN
+	loadLmvModel
 } from './lmv-loader';
 import { APP_COLOR_MODE, getLmvTheme } from '$lib/config/theme';
 import { ensureCustomViewMatrixPatch } from '$lib/walk/custom-view-matrix-patch';
@@ -602,18 +601,14 @@ export function createLmvBridge({
 			onStatus('Loading model...');
 			try {
 				const model = await loadLmvModel(viewer, urn);
-				if (urn === SNOWDON_MODEL_URN) {
-					// Construction-phasing model (Snowdon Towers Complete): single
-					// combined {3D} view; the engine buckets elements by their
-					// per-element 'Category' property.
-					const extension = await ensurePhasingExtension();
-					if (extension) {
-						extension.resetForNewModel();
-						extension.addModel(model);
-					}
-				} else {
-					// A non-phasing site replaced the model — drop stale engine state.
-					phasingExtension?.resetForNewModel();
+				// Construction phasing works for any Revit model: the engine
+				// buckets elements by their per-element 'Category' property and
+				// classifyLevel() understands both Snowdon-style (Parking, L1..L5)
+				// and Office-style (Basement, Ground Floor, 1st Floor) level names.
+				const extension = await ensurePhasingExtension();
+				if (extension) {
+					extension.resetForNewModel();
+					extension.addModel(model);
 				}
 				loadedUrn = urn;
 			} catch (error) {
