@@ -1,1 +1,1 @@
-{"invalid":"無效","loading":"正在載入","required":"必填資訊","tooLong":"目前字元長度為 {currentLength}，超過了最大字元長度 {maxLength}。","tooShort":"目前字元長度為 {currentLength}，少於最小字元長度 {minLength}。"}
+{"fractionalSecond":"小數秒","fractionalSecondDown":"減少小數秒","fractionalSecondUp":"增加小數秒","hour":"小時","hourDown":"減少小時","hourUp":"增加小時","meridiem":"AM/PM","meridiemDown":"減少 AM/PM","meridiemUp":"增加 AM/PM","minute":"分鐘","minuteDown":"減少分鐘","minuteUp":"增加分鐘","second":"秒","secondDown":"減少秒","secondUp":"增加秒"}
