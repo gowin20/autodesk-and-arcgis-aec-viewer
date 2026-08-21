@@ -8,11 +8,18 @@
 		type GeocodeSuggestion
 	} from '$lib/arcgis/geocode';
 	import {
+		fetchPlaceDetails,
+		fetchPlacesNearby,
+		type NearbyPlaceResult,
+		type PlaceDetails
+	} from '$lib/arcgis/places';
+	import {
 		fetchEnabledTravelModes,
 		fetchRoute,
 		type ServiceAreaTravelModeObject
 	} from '$lib/arcgis/routing';
 	import {
+		addPlaceResultViewerLayer,
 		removeRoutingResultViewerLayer,
 		upsertRoutingResultViewerLayer
 	} from '$lib/state/layers';
@@ -30,6 +37,12 @@
 		routePlannerMapPickedPoint,
 		routePlannerMapPickTargetId
 	} from '$lib/state/routing-stops';
+	import {
+		clearNearbyPlaces,
+		nearbyPlaces,
+		setNearbyPlaces,
+		type NearbyPlace
+	} from '$lib/state/places-nearby';
 
 	const arcgisToken =
 		import.meta.env.VITE_ARCGIS_ACCESS_TOKEN?.trim() ??
@@ -37,6 +50,18 @@
 		'';
 
 	const hasArcgisToken = arcgisToken.length > 0;
+	const PLACES_NEARBY_RADIUS_METERS = 750;
+	const PLACE_CATEGORIES = [
+		{ id: '4d4b7104d754a06370d81259', label: 'Arts and Entertainment' },
+		{ id: '4d4b7105d754a06375d81259', label: 'Business and Professional Services' },
+		{ id: '63be6904847c3692a84b9b9a', label: 'Community and Government' },
+		{ id: '63be6904847c3692a84b9bb5', label: 'Dining and Drinking' },
+		{ id: '4d4b7105d754a06376d81259', label: 'Health and Medicine' },
+		{ id: '4d4b7105d754a06377d81259', label: 'Landmarks and Outdoors' },
+		{ id: '4d4b7105d754a06378d81259', label: 'Retail' },
+		{ id: '4f4528bc4b90abdf24c9de85', label: 'Sports and Recreation' },
+		{ id: '4d4b7105d754a06379d81259', label: 'Travel and Transportation' }
+	] as const;
 
 	type RouteDestinationInput = {
 		id: string;
@@ -85,6 +110,17 @@
 	let routeDirectionSteps = $state<RouteDirectionStep[]>([]);
 	let showTurnByTurn = $state(false);
 	let activeRouteMapPickDestinationId = $state<string | null>(null);
+	let showPlacesNearby = $state(false);
+	let placesFlowView = $state<'results' | 'categories' | 'details'>('results');
+	let activePlaceCategoryId = $state('');
+	let isLoadingPlaces = $state(false);
+	let placesError = $state<string | null>(null);
+	let selectedNearbyPlace = $state<NearbyPlace | null>(null);
+	let selectedPlaceDetails = $state<PlaceDetails | null>(null);
+	let isLoadingPlaceDetails = $state(false);
+	let placeDetailsError = $state<string | null>(null);
+	let placesRequestId = 0;
+	let placeDetailsRequestId = 0;
 
 	const createRouteDestinationInput = (): RouteDestinationInput => ({
 		id: `route-stop-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -130,6 +166,12 @@
 	const formatDistance = (kilometers: number | undefined): string => {
 		if (typeof kilometers !== 'number' || !Number.isFinite(kilometers)) return 'Unavailable';
 		return `${Math.round(kilometers).toLocaleString()} km`;
+	};
+
+	const formatPlaceDistance = (meters: number): string => {
+		if (!Number.isFinite(meters)) return 'Distance unavailable';
+		if (meters < 1000) return `${Math.round(meters)} m away`;
+		return `${(meters / 1000).toFixed(1)} km away`;
 	};
 
 	const formatCoordinateLabel = (longitude: number, latitude: number): string =>
@@ -510,6 +552,119 @@
 		}
 	};
 
+	const normalizeNearbyPlace = (place: NearbyPlaceResult): NearbyPlace => ({
+		placeId: place.placeId,
+		name: place.name,
+		categoryLabel: place.categories?.[0]?.label ?? 'Place',
+		distanceMeters: place.distance,
+		longitude: place.location.x,
+		latitude: place.location.y
+	});
+
+	const searchPlacesNearby = async (categoryId = activePlaceCategoryId) => {
+		if (!hasArcgisToken) return;
+
+		const requestId = ++placesRequestId;
+		isLoadingPlaces = true;
+		placesError = null;
+		setNearbyPlaces([]);
+		try {
+			const results = await fetchPlacesNearby(
+				categoryId ? [categoryId] : {},
+				get(mapCenter),
+				PLACES_NEARBY_RADIUS_METERS
+			);
+			if (requestId !== placesRequestId) return;
+			setNearbyPlaces((results ?? []).map(normalizeNearbyPlace));
+		} catch (error: unknown) {
+			if (requestId !== placesRequestId) return;
+			setNearbyPlaces([]);
+			placesError = error instanceof Error ? error.message : 'Nearby places search failed.';
+		} finally {
+			if (requestId === placesRequestId) {
+				isLoadingPlaces = false;
+			}
+		}
+	};
+
+	const togglePlacesNearby = () => {
+		showPlacesNearby = !showPlacesNearby;
+		if (showPlacesNearby) {
+			placesFlowView = 'results';
+			selectedNearbyPlace = null;
+			selectedPlaceDetails = null;
+			placeDetailsError = null;
+			void searchPlacesNearby();
+			return;
+		}
+
+		placesRequestId += 1;
+		placeDetailsRequestId += 1;
+		isLoadingPlaces = false;
+		isLoadingPlaceDetails = false;
+		clearNearbyPlaces();
+		selectedNearbyPlace = null;
+		selectedPlaceDetails = null;
+		placesError = null;
+		placeDetailsError = null;
+		placesFlowView = 'results';
+	};
+
+	const openPlaceCategories = () => {
+		placesFlowView = 'categories';
+	};
+
+	const selectPlaceCategory = (categoryId: string) => {
+		activePlaceCategoryId = categoryId;
+		placesFlowView = 'results';
+		selectedNearbyPlace = null;
+		selectedPlaceDetails = null;
+		placeDetailsError = null;
+		void searchPlacesNearby(categoryId);
+	};
+
+	const openPlaceDetails = (place: NearbyPlace) => {
+		selectedNearbyPlace = place;
+		selectedPlaceDetails = null;
+		placeDetailsError = null;
+		placesFlowView = 'details';
+		const requestId = ++placeDetailsRequestId;
+		isLoadingPlaceDetails = true;
+
+		void fetchPlaceDetails(place.placeId)
+			.then((details) => {
+				if (requestId !== placeDetailsRequestId) return;
+				selectedPlaceDetails = details;
+				addPlaceResultViewerLayer({
+					placeId: place.placeId,
+					label: place.name,
+					longitude:
+						typeof details.location?.x === 'number' ? details.location.x : place.longitude,
+					latitude:
+						typeof details.location?.y === 'number' ? details.location.y : place.latitude,
+					details
+				});
+			})
+			.catch((error: unknown) => {
+				if (requestId !== placeDetailsRequestId) return;
+				placeDetailsError = error instanceof Error ? error.message : 'Place details request failed.';
+			})
+			.finally(() => {
+				if (requestId === placeDetailsRequestId) {
+					isLoadingPlaceDetails = false;
+				}
+			});
+	};
+
+	const closePlaceDetails = () => {
+		placeDetailsRequestId += 1;
+		isLoadingPlaceDetails = false;
+		selectedNearbyPlace = null;
+		selectedPlaceDetails = null;
+		placeDetailsError = null;
+		placesFlowView = 'results';
+	};
+
 	const updateRouteDestinationInput = (
 		destinationId: string,
 		updater: (destination: RouteDestinationInput) => RouteDestinationInput
@@ -753,10 +908,11 @@
 		routePlannerMapPickedPoint.set(null);
 		routePlannerLocations.set([]);
 		removeRoutingResultViewerLayer();
+		clearNearbyPlaces();
 	});
 </script>
 
-<calcite-panel heading="Tools" description="Location services and analysis">
+<calcite-panel heading="ArcGIS Tools" description="Location services and analysis">
 	<calcite-block heading="Location services" description="Search and analysis" open>
 		{#if !hasArcgisToken}
 			<calcite-notice open kind="warning" icon>
@@ -1015,6 +1171,140 @@
 					{/if}
 				{/if}
 			</calcite-block>
+
+			<calcite-block class="tool-subpanel" heading="Places" description="Find nearby places" open>
+				<calcite-button
+					width="full"
+					appearance={showPlacesNearby ? 'solid' : 'outline'}
+					kind="neutral"
+					icon-start="pin"
+					onclick={togglePlacesNearby}
+				>
+					Find places nearby
+				</calcite-button>
+				{#if showPlacesNearby}
+					<div class="tool-subpanel">
+						<calcite-flow>
+							<calcite-flow-item
+								heading="Nearby places"
+								description={`Within ${PLACES_NEARBY_RADIUS_METERS} meters`}
+								selected={placesFlowView === 'results'}
+							>
+								<calcite-button
+									width="full"
+									appearance="outline"
+									icon-start="filter"
+									onclick={openPlaceCategories}
+								>
+									Filter by category
+								</calcite-button>
+								{#if isLoadingPlaces}
+									<calcite-notice open kind="info" icon>
+										<div slot="message">Finding places nearby...</div>
+									</calcite-notice>
+								{:else if placesError}
+									<calcite-notice open kind="danger" icon>
+										<div slot="message">{placesError}</div>
+									</calcite-notice>
+								{:else if $nearbyPlaces.length === 0}
+									<calcite-notice open kind="info" icon>
+										<div slot="message">No places were found nearby.</div>
+									</calcite-notice>
+								{:else}
+									<calcite-list
+										class="places-results-list"
+										label="Nearby places"
+										selection-mode="none"
+										display-mode="flat"
+									>
+										{#each $nearbyPlaces as place (place.placeId)}
+											<calcite-list-item
+												label={place.name}
+												description={`${place.categoryLabel} • ${formatPlaceDistance(place.distanceMeters)}`}
+												value={place.placeId}
+												interaction-mode="interactive"
+												onclick={() => openPlaceDetails(place)}
+											>
+												<calcite-icon slot="content-start" icon="pin"></calcite-icon>
+											</calcite-list-item>
+										{/each}
+									</calcite-list>
+								{/if}
+							</calcite-flow-item>
+
+							<calcite-flow-item
+								heading="Filter by category"
+								description="Choose a place category"
+								selected={placesFlowView === 'categories'}
+								oncalciteFlowItemBack={() => (placesFlowView = 'results')}
+							>
+								<calcite-list
+									class="places-category-list"
+									label="Place categories"
+									selection-mode="none"
+									display-mode="flat"
+								>
+									<calcite-list-item
+										label="All categories"
+										description={activePlaceCategoryId ? 'Search all place categories' : 'Currently selected'}
+										value="all"
+										interaction-mode="interactive"
+										onclick={() => selectPlaceCategory('')}
+									></calcite-list-item>
+									{#each PLACE_CATEGORIES as category (category.id)}
+										<calcite-list-item
+											label={category.label}
+											description={activePlaceCategoryId === category.id ? 'Currently selected' : undefined}
+											value={category.id}
+											interaction-mode="interactive"
+											onclick={() => selectPlaceCategory(category.id)}
+										></calcite-list-item>
+									{/each}
+								</calcite-list>
+							</calcite-flow-item>
+
+							<calcite-flow-item
+								heading={selectedNearbyPlace?.name ?? 'Place details'}
+								description={selectedNearbyPlace ? selectedNearbyPlace.categoryLabel : undefined}
+								selected={placesFlowView === 'details'}
+								oncalciteFlowItemBack={closePlaceDetails}
+							>
+								{#if isLoadingPlaceDetails}
+									<calcite-notice open kind="info" icon>
+										<div slot="message">Loading place details...</div>
+									</calcite-notice>
+								{:else if placeDetailsError}
+									<calcite-notice open kind="danger" icon>
+										<div slot="message">{placeDetailsError}</div>
+									</calcite-notice>
+								{:else if selectedPlaceDetails}
+									{#if selectedPlaceDetails.address?.streetAddress}
+										<calcite-block heading="Address" open>
+											<p>{selectedPlaceDetails.address.streetAddress}</p>
+										</calcite-block>
+									{/if}
+									{#if selectedPlaceDetails.contactInfo?.website}
+										<calcite-block heading="Website" open>
+											<a
+												href={selectedPlaceDetails.contactInfo.website}
+												target="_blank"
+												rel="noreferrer"
+											>
+												{selectedPlaceDetails.contactInfo.website}
+											</a>
+										</calcite-block>
+									{/if}
+									{#if selectedPlaceDetails.hours?.opening}
+										<calcite-block heading="Opening hours" open>
+											<pre>{JSON.stringify(selectedPlaceDetails.hours.opening, null, 2)}</pre>
+										</calcite-block>
+									{/if}
+								{/if}
+							</calcite-flow-item>
+						</calcite-flow>
+					</div>
+				{/if}
+			</calcite-block>
 		{/if}
 	</calcite-block>
 </calcite-panel>
@@ -1033,6 +1323,12 @@
 	}
 
 	.route-stops-list {
+		--calcite-list-item-background-color: transparent;
+	}
+
+	.places-results-list,
+	.places-category-list {
+		margin-top: 0.75rem;
 		--calcite-list-item-background-color: transparent;
 	}
 
@@ -1090,5 +1386,16 @@
 	.route-direction-step-text {
 		margin: 0;
 		color: var(--calcite-color-text-1);
+	}
+
+	.places-results-list calcite-icon {
+		color: var(--calcite-color-brand);
+	}
+
+	pre {
+		margin: 0;
+		white-space: pre-wrap;
+		font-family: var(--calcite-font-family);
+		font-size: var(--calcite-font-size--2);
 	}
 </style>

@@ -7,7 +7,8 @@
 		GeoJSONSource,
 		GeoJSONSourceSpecification,
 		IControl,
-		Map as MaplibreMap
+		Map as MaplibreMap,
+		MapLayerMouseEvent
 	} from 'maplibre-gl';
 	import { getElevationAtLocation } from '$lib/arcgis/elevation';
 	import { fetchServiceArea, type ServiceAreaParameters } from '$lib/arcgis/routing';
@@ -22,8 +23,10 @@
 		projectLayersVisible,
 		type ElevationResultViewerLayer,
 		type GeocodeResultViewerLayer,
+		type PlaceResultViewerLayer,
 		type RoutingResultViewerLayer,
 		type SiteLocationViewerLayer,
+		type SiteOutlineViewerLayer,
 		upsertGeocodeResultViewerLayer,
 		upsertServiceAreaViewerLayer,
 		viewerLayers,
@@ -42,6 +45,7 @@
 		routePlannerMapPickedPoint,
 		routePlannerMapPickTargetId
 	} from '$lib/state/routing-stops';
+	import { clearNearbyPlaces, nearbyPlaces, type NearbyPlace } from '$lib/state/places-nearby';
 	import { lmvInteractionEnabled } from '$lib/state/lmv-interaction';
 	import { loadSiteCatalog, loadSiteOutlines, selectedSiteId, type Site } from '$lib/state/site-catalog';
 	import { createLmvBridge, createMercatorModelPlacement } from '$lib/lmv/lmv-maplibre-bridge';
@@ -89,10 +93,7 @@
 	// pins on load, and models only load when a site is picked or approached.
 	const MODEL_ORIGIN: [number, number] = [-79.88666527, 40.022371938];
 
-	// Per-site pin/outline colors, same palette as the acc-folder-rvt-on-map viewer.
-	const SITE_PALETTE = ['#ea580c', '#2563eb', '#16a34a', '#9333ea', '#dc2626', '#0891b2'];
 	const OUTLINES_SOURCE_ID = 'site-outlines';
-	const OUTLINES_LAYER_ID = 'site-outline-lines';
 
 	const getErrorMessage = (error: unknown): string =>
 		error instanceof Error ? error.message : 'Map failed to load.';
@@ -134,59 +135,6 @@
 					attributionControl: false,
 					canvasContextAttributes: { antialias: true }
 				});
-				// ── Site pins + outline polygons (always visible, independent of LMV) ──
-				// The style may not be ready when the map is created, and custom
-				// sources/layers are dropped on every basemap style swap, so use the
-				// same retry pattern as maplibre-index.html's addBuildingLayers/restoreLayers.
-				const addOutlineLayers = (): boolean => {
-					if (!map || !map.isStyleLoaded()) return false;
-					if (!map.getSource(OUTLINES_SOURCE_ID)) {
-						map.addSource(OUTLINES_SOURCE_ID, { type: 'geojson', data: outlinesData });
-					}
-					if (!map.getLayer(OUTLINES_LAYER_ID)) {
-						map.addLayer({
-							id: OUTLINES_LAYER_ID,
-							type: 'line',
-							source: OUTLINES_SOURCE_ID,
-							filter: ['==', ['get', 'kind'], 'outline'],
-							paint: {
-								// eslint-disable-next-line @typescript-eslint/no-explicit-any
-								'line-color': [
-									'match',
-									['get', 'id'],
-									...sites.flatMap((s, i) => [s.id, SITE_PALETTE[i % SITE_PALETTE.length]]),
-									SITE_PALETTE[0]
-								] as any,
-								'line-width': 2.5,
-								'line-opacity': 0.95
-							}
-						});
-					}
-					return true;
-				};
-				let outlineRetries = 0;
-				const restoreOutlineLayers = (): void => {
-					if (addOutlineLayers()) {
-						outlineRetries = 0;
-						return;
-					}
-					if (outlineRetries >= 30) return;
-					outlineRetries += 1;
-					window.setTimeout(restoreOutlineLayers, 100);
-				};
-				map.on('style.load', restoreOutlineLayers);
-				restoreOutlineLayers();
-
-				// One clickable pin per site (DOM markers survive style swaps).
-				for (const [index, site] of sites.entries()) {
-					const marker = new maplibregl.Marker({
-						color: SITE_PALETTE[index % SITE_PALETTE.length]
-					})
-						.setLngLat([site.lon, site.lat])
-						.addTo(map);
-					marker.getElement().addEventListener('click', () => selectedSiteId.set(site.id));
-				}
-
 				// Show the full site list from the start.
 				const siteBounds = new maplibregl.LngLatBounds();
 				sites.forEach((s) => siteBounds.extend([s.lon, s.lat]));
@@ -282,9 +230,9 @@
 					});
 
 					// ── Proximity auto-load ──
-					// When the camera settles with any site pin in view at zoom >= 12,
+					// When the camera settles with any site in view at zoom >= 12,
 					// load that site's model in place (no flyTo — the user's camera is
-					// left alone). If several pins are visible, the one nearest the
+					// left alone). If several sites are visible, the one nearest the
 					// viewport center wins. The old model is unloaded by loadLmvModel.
 					let lastAutoLoadedSiteId: string | null = null;
 					const onCameraSettled = (): void => {
@@ -372,7 +320,14 @@
 				);
 				let activeServiceAreaPopup: InstanceType<typeof maplibregl.Popup> | undefined;
 				const markerLayers = new Map<string, InstanceType<typeof maplibregl.Marker>>();
+				const siteOutlineMapLayerIds = new Set<string>();
+				type ViewerLayerPopupHandler = (event: MapLayerMouseEvent) => void;
+				const viewerLayerPopupHandlers = new Map<string, ViewerLayerPopupHandler>();
+				let activeViewerLayerPopup: InstanceType<typeof maplibregl.Popup> | undefined;
+				let activeViewerLayerPopupMapLayerId: string | undefined;
 				const routePlannerMarkers = new Map<string, InstanceType<typeof maplibregl.Marker>>();
+				const nearbyPlaceMarkers = new Map<string, InstanceType<typeof maplibregl.Marker>>();
+				let activeNearbyPlaces: NearbyPlace[] = [];
 				const SERVICE_AREA_SOURCE_ID = 'service-area-result';
 				const SERVICE_AREA_FILL_LAYER_ID = 'service-area-fill';
 				const SERVICE_AREA_OUTLINE_LAYER_ID = 'service-area-outline';
@@ -385,8 +340,12 @@
 					layer.kind === 'service-area';
 				const isSiteLocationLayer = (layer: ViewerLayer): layer is SiteLocationViewerLayer =>
 					layer.kind === 'site-location';
+				const isSiteOutlineLayer = (layer: ViewerLayer): layer is SiteOutlineViewerLayer =>
+					layer.kind === 'site-outline';
 				const isGeocodeResultLayer = (layer: ViewerLayer): layer is GeocodeResultViewerLayer =>
 					layer.kind === 'geocode-result';
+				const isPlaceResultLayer = (layer: ViewerLayer): layer is PlaceResultViewerLayer =>
+					layer.kind === 'place-result';
 				const isElevationResultLayer = (layer: ViewerLayer): layer is ElevationResultViewerLayer =>
 					layer.kind === 'elevation-result';
 				const isRoutingResultLayer = (layer: ViewerLayer): layer is RoutingResultViewerLayer =>
@@ -395,6 +354,127 @@
 					activeViewerLayers.find(
 						(layer) => layer.kind === 'contextual' && layer.contextualLayerId === layerId
 					);
+				const formatPopupValue = (value: unknown): string => {
+					if (value === null || value === undefined || value === '') {
+						return 'Unavailable';
+					}
+					if (typeof value === 'object') {
+						return JSON.stringify(value) ?? String(value);
+					}
+					return String(value);
+				};
+				const appendPopupRow = (content: HTMLDivElement, label: string, value: unknown) => {
+					const row = document.createElement('div');
+					const labelElement = document.createElement('strong');
+					labelElement.textContent = `${label}: `;
+					row.append(labelElement, document.createTextNode(formatPopupValue(value)));
+					content.append(row);
+				};
+				const appendPopupLabel = (content: HTMLDivElement, label: string) => {
+					const labelElement = document.createElement('strong');
+					labelElement.textContent = label;
+					content.append(labelElement);
+				};
+				const appendPopupViewItemLink = (content: HTMLDivElement, url: string) => {
+					const link = document.createElement('a');
+					link.className = 'contextual-popup-view-item';
+					link.href = url;
+					link.target = '_blank';
+					link.rel = 'noopener noreferrer';
+					link.textContent = 'View item';
+					content.append(link);
+				};
+				const getPaintPropertyNames = (paint: unknown): string[] => {
+					const propertyNames = new Set<string>();
+					const visit = (value: unknown): void => {
+						if (Array.isArray(value)) {
+							if (value[0] === 'get' && typeof value[1] === 'string') {
+								propertyNames.add(value[1]);
+							}
+							value.forEach(visit);
+							return;
+						}
+						if (typeof value === 'object' && value !== null) {
+							Object.values(value).forEach(visit);
+						}
+					};
+					visit(paint);
+					return [...propertyNames];
+				};
+				const appendPopupDetails = (
+					content: HTMLDivElement,
+					value: unknown,
+					path = ''
+				): void => {
+					if (value === null || value === undefined) {
+						if (path) appendPopupRow(content, path, value);
+						return;
+					}
+					if (Array.isArray(value)) {
+						if (value.length === 0) {
+							if (path) appendPopupRow(content, path, value);
+							return;
+						}
+						value.forEach((item, index) => {
+							appendPopupDetails(content, item, `${path}[${index}]`);
+						});
+						return;
+					}
+					if (typeof value === 'object') {
+						for (const [key, childValue] of Object.entries(value)) {
+							appendPopupDetails(content, childValue, path ? `${path}.${key}` : key);
+						}
+						return;
+					}
+					if (path) appendPopupRow(content, path, value);
+				};
+				const createViewerLayerPopupContent = (
+					layer: ViewerLayer,
+					properties?: Record<string, unknown> | null
+				): HTMLDivElement => {
+					const content = document.createElement('div');
+					appendPopupRow(content, 'Label', layer.label);
+
+					switch (layer.kind) {
+						case 'contextual': {
+							const contextualLayer = contextualLayerConfigById.get(layer.contextualLayerId);
+							appendPopupLabel(content, layer.label);
+							for (const propertyName of getPaintPropertyNames(contextualLayer?.style?.paint)) {
+								appendPopupRow(content, propertyName, properties?.[propertyName]);
+							}
+							if (contextualLayer?.itemUrl) {
+								appendPopupViewItemLink(content, contextualLayer.itemUrl);
+							}
+							break;
+						}
+						case 'site-location':
+						case 'site-outline':
+							appendPopupRow(content, 'Site ID', layer.siteId);
+							break;
+						case 'geocode-result':
+							appendPopupRow(content, 'Location', layer.locationLabel);
+							break;
+						case 'elevation-result':
+							appendPopupRow(content, 'Elevation (m)', layer.elevationMeters);
+							appendPopupRow(content, 'Elevation (ft)', layer.elevationFeet);
+							appendPopupRow(content, 'Longitude', layer.longitude.toFixed(5));
+							appendPopupRow(content, 'Latitude', layer.latitude.toFixed(5));
+							break;
+						case 'place-result':
+							appendPopupDetails(content, layer.details);
+							break;
+						case 'service-area':
+						case 'routing-result':
+							break;
+					}
+
+					return content;
+				};
+				const createViewerLayerPopup = (
+					layer: ViewerLayer,
+					properties?: Record<string, unknown> | null
+				): InstanceType<typeof maplibregl.Popup> =>
+					new maplibregl.Popup().setDOMContent(createViewerLayerPopupContent(layer, properties));
 				let activeRoutePlannerLocations: Array<{
 					id: string;
 					order: number;
@@ -580,6 +660,61 @@
 					}
 
 				};
+				const createPlaceMarkerElement = (iconUrl?: string): HTMLDivElement => {
+					const element = document.createElement('div');
+					element.className = 'place-result-marker';
+					element.dataset.iconUrl = iconUrl ?? '';
+					if (iconUrl) {
+						const image = document.createElement('img');
+						image.src = iconUrl;
+						image.alt = '';
+						image.width = 32;
+						image.height = 32;
+						element.append(image);
+					} else {
+						element.textContent = '+';
+					}
+					return element;
+				};
+				const syncNearbyPlaceMarkers = () => {
+					if (!map) return;
+					const persistentPlaceIds = new Set(
+						activeViewerLayers.filter(isPlaceResultLayer).map((layer) => layer.placeId)
+					);
+					const visibleNearbyPlaces = activeNearbyPlaces.filter(
+						(place) => !persistentPlaceIds.has(place.placeId)
+					);
+					const activeNearbyPlaceIds = new Set(visibleNearbyPlaces.map((place) => place.placeId));
+
+					for (const [placeId, marker] of nearbyPlaceMarkers.entries()) {
+						if (!activeNearbyPlaceIds.has(placeId)) {
+							marker.remove();
+							nearbyPlaceMarkers.delete(placeId);
+						}
+					}
+
+					for (const place of visibleNearbyPlaces) {
+						let marker = nearbyPlaceMarkers.get(place.placeId);
+						if (!marker) {
+							marker = new maplibregl.Marker({ color: '#f59e0b' })
+								.setLngLat([place.longitude, place.latitude])
+								.setPopup(
+									new maplibregl.Popup().setText(
+										`${place.name} (${formatPopupValue(place.categoryLabel)})`
+									)
+								)
+								.addTo(map);
+							nearbyPlaceMarkers.set(place.placeId, marker);
+						} else {
+							marker.setLngLat([place.longitude, place.latitude]);
+							marker.setPopup(
+								new maplibregl.Popup().setText(
+									`${place.name} (${formatPopupValue(place.categoryLabel)})`
+								)
+							);
+						}
+					}
+				};
 				const syncMarkerViewerLayers = () => {
 					if (!map) return;
 
@@ -587,7 +722,8 @@
 						(layer) =>
 							layer.kind === 'site-location' ||
 							layer.kind === 'geocode-result' ||
-							layer.kind === 'elevation-result'
+							layer.kind === 'elevation-result' ||
+							layer.kind === 'place-result'
 					);
 					const activeMarkerLayerIds = new Set(markerLayerEntries.map((layer) => layer.id));
 
@@ -604,14 +740,18 @@
 
 						if (!marker) {
 							if (isSiteLocationLayer(layer)) {
-								marker = new maplibregl.Marker({ draggable: false })
+								marker = new maplibregl.Marker({
+									color: layer.color,
+									draggable: false
+								})
 									.setLngLat([layer.longitude, layer.latitude])
-									.setPopup(new maplibregl.Popup().setText('Site location'))
+									.setPopup(createViewerLayerPopup(layer))
 									.addTo(map);
+								marker.getElement().addEventListener('click', () => selectedSiteId.set(layer.siteId));
 							} else if (isGeocodeResultLayer(layer)) {
 								marker = new maplibregl.Marker({ color: '#007ac2' })
 									.setLngLat([layer.longitude, layer.latitude])
-									.setPopup(new maplibregl.Popup().setText(layer.locationLabel))
+									.setPopup(createViewerLayerPopup(layer))
 									.addTo(map);
 							} else if (isElevationResultLayer(layer)) {
 								const elevationColor = getElevationMarkerColor(layer.elevationFeet);
@@ -627,25 +767,37 @@
 									color: elevationColor
 								})
 									.setLngLat([layer.longitude, layer.latitude])
-									.setPopup(
-										new maplibregl.Popup().setHTML(
-											`<strong>${layer.label}</strong><br/>${layer.elevationMeters.toLocaleString(undefined, {
-												maximumFractionDigits: 1
-											})} m (${layer.elevationFeet.toLocaleString(undefined, {
-												maximumFractionDigits: 0
-											})} ft)<br/>Longitude: ${layer.longitude.toFixed(5)}<br/>Latitude: ${layer.latitude.toFixed(5)}`
-										)
-									)
+									.setPopup(createViewerLayerPopup(layer))
+									.addTo(map);
+							} else if (isPlaceResultLayer(layer)) {
+								marker = new maplibregl.Marker({
+									element: createPlaceMarkerElement(layer.iconUrl),
+									anchor: 'bottom'
+								})
+									.setLngLat([layer.longitude, layer.latitude])
+									.setPopup(createViewerLayerPopup(layer))
 									.addTo(map);
 							}
 							if (marker) {
 								markerLayers.set(layer.id, marker);
 							}
 						} else {
-							marker.setLngLat([layer.longitude, layer.latitude]);
-							if (isGeocodeResultLayer(layer)) {
-								marker.setPopup(new maplibregl.Popup().setText(layer.locationLabel));
+							if (isPlaceResultLayer(layer)) {
+								const markerElement = marker.getElement();
+								if ((markerElement.dataset.iconUrl ?? '') !== (layer.iconUrl ?? '')) {
+									marker.remove();
+									marker = new maplibregl.Marker({
+										element: createPlaceMarkerElement(layer.iconUrl),
+										anchor: 'bottom'
+									})
+										.setLngLat([layer.longitude, layer.latitude])
+										.setPopup(createViewerLayerPopup(layer))
+										.addTo(map);
+									markerLayers.set(layer.id, marker);
+								}
 							}
+							marker.setLngLat([layer.longitude, layer.latitude]);
+							marker.setPopup(createViewerLayerPopup(layer));
 						}
 
 						const markerElement = marker?.getElement();
@@ -871,6 +1023,153 @@
 							mapError = getErrorMessage(error);
 						});
 				});
+				const getSiteOutlineMapLayerId = (layer: SiteOutlineViewerLayer): string =>
+					`map-${layer.id}`;
+				const syncSiteOutlineViewerLayers = () => {
+					if (!map || !map.isStyleLoaded()) {
+						return;
+					}
+
+					const outlineLayers = activeViewerLayers.filter(isSiteOutlineLayer);
+					const activeMapLayerIds = new Set(
+						outlineLayers.map((layer) => getSiteOutlineMapLayerId(layer))
+					);
+					for (const mapLayerId of siteOutlineMapLayerIds) {
+						if (activeMapLayerIds.has(mapLayerId)) {
+							continue;
+						}
+						if (map.getLayer(mapLayerId)) {
+							map.removeLayer(mapLayerId);
+						}
+						siteOutlineMapLayerIds.delete(mapLayerId);
+					}
+
+					if (outlineLayers.length === 0) {
+						if (map.getSource(OUTLINES_SOURCE_ID)) {
+							map.removeSource(OUTLINES_SOURCE_ID);
+						}
+						return;
+					}
+
+					if (!map.getSource(OUTLINES_SOURCE_ID)) {
+						map.addSource(OUTLINES_SOURCE_ID, { type: 'geojson', data: outlinesData });
+					}
+
+					for (const layer of outlineLayers) {
+						const mapLayerId = getSiteOutlineMapLayerId(layer);
+						if (!map.getLayer(mapLayerId)) {
+							map.addLayer({
+								id: mapLayerId,
+								type: 'line',
+								source: OUTLINES_SOURCE_ID,
+								filter: [
+									'all',
+									['==', ['get', 'kind'], 'outline'],
+									['==', ['get', 'id'], layer.siteId]
+								],
+								paint: {
+									'line-color': layer.color,
+									'line-width': 2.5,
+									'line-opacity': 0.95
+								}
+							});
+						}
+						siteOutlineMapLayerIds.add(mapLayerId);
+						map.setLayoutProperty(
+							mapLayerId,
+							'visibility',
+							isProjectLayersVisible && layer.visible ? 'visible' : 'none'
+						);
+					}
+				};
+				const getViewerLayerPopupBindings = (): Array<{
+					mapLayerId: string;
+					viewerLayerId: string;
+				}> => {
+					if (!map) {
+						return [];
+					}
+
+					const bindings: Array<{ mapLayerId: string; viewerLayerId: string }> = [];
+					for (const layer of activeViewerLayers) {
+						if (layer.kind === 'contextual') {
+							const mapLayerId = contextualFeatureLayers.get(layer.contextualLayerId)?.layer?.id;
+							if (mapLayerId) {
+								bindings.push({ mapLayerId, viewerLayerId: layer.id });
+							}
+						} else if (layer.kind === 'service-area') {
+							bindings.push(
+								{ mapLayerId: SERVICE_AREA_FILL_LAYER_ID, viewerLayerId: layer.id },
+								{ mapLayerId: SERVICE_AREA_OUTLINE_LAYER_ID, viewerLayerId: layer.id }
+							);
+						} else if (layer.kind === 'site-outline') {
+							bindings.push({
+								mapLayerId: getSiteOutlineMapLayerId(layer),
+								viewerLayerId: layer.id
+							});
+						} else if (layer.kind === 'routing-result') {
+							bindings.push({
+								mapLayerId: ROUTE_PLANNER_LINE_LAYER_ID,
+								viewerLayerId: layer.id
+							});
+						}
+					}
+
+					return bindings.filter(({ mapLayerId }) => Boolean(map.getLayer(mapLayerId)));
+				};
+				const removeViewerLayerPopup = () => {
+					activeViewerLayerPopup?.remove();
+					activeViewerLayerPopup = undefined;
+					activeViewerLayerPopupMapLayerId = undefined;
+				};
+				const showViewerLayerPopup = (
+					layer: ViewerLayer,
+					event: MapLayerMouseEvent,
+					mapLayerId: string
+				) => {
+					removeViewerLayerPopup();
+					activeViewerLayerPopupMapLayerId = mapLayerId;
+					activeViewerLayerPopup = createViewerLayerPopup(
+						layer,
+						event.features?.[0]?.properties
+					)
+						.setLngLat(event.lngLat)
+						.addTo(map!);
+				};
+				const syncViewerLayerPopupHandlers = () => {
+					if (!map) {
+						return;
+					}
+
+					const bindings = getViewerLayerPopupBindings();
+					const activeMapLayerIds = new Set(bindings.map(({ mapLayerId }) => mapLayerId));
+					for (const [mapLayerId, handler] of viewerLayerPopupHandlers.entries()) {
+						if (activeMapLayerIds.has(mapLayerId)) {
+							continue;
+						}
+						map.off('click', mapLayerId, handler);
+						viewerLayerPopupHandlers.delete(mapLayerId);
+						if (activeViewerLayerPopupMapLayerId === mapLayerId) {
+							removeViewerLayerPopup();
+						}
+					}
+
+					for (const { mapLayerId, viewerLayerId } of bindings) {
+						if (viewerLayerPopupHandlers.has(mapLayerId)) {
+							continue;
+						}
+						const handler: ViewerLayerPopupHandler = (event) => {
+							const layer = activeViewerLayers.find(
+								(activeLayer) => activeLayer.id === viewerLayerId
+							);
+							if (layer) {
+								showViewerLayerPopup(layer, event, mapLayerId);
+							}
+						};
+						map.on('click', mapLayerId, handler);
+						viewerLayerPopupHandlers.set(mapLayerId, handler);
+					}
+				};
 				const syncViewerLayers = () => {
 					if (!map) {
 						return;
@@ -922,6 +1221,7 @@
 						}
 					}
 
+					syncSiteOutlineViewerLayers();
 					const serviceAreaLayer = activeViewerLayers.find(isServiceAreaLayer);
 					if (serviceAreaLayer && isProjectLayersVisible && serviceAreaLayer.visible) {
 						renderServiceArea(
@@ -938,7 +1238,9 @@
 						removeRoutePlannerLine();
 					}
 					syncMarkerViewerLayers();
+					syncNearbyPlaceMarkers();
 					syncRoutePlannerRender();
+					syncViewerLayerPopupHandlers();
 
 					// Contextual feature layers are appended on top — keep the LMV
 					// model layer above them so the building is never buried.
@@ -949,6 +1251,14 @@
 				const unsubscribeViewerLayers = viewerLayers.subscribe((layers) => {
 					activeViewerLayers = layers;
 					syncViewerLayers();
+				});
+				const unsubscribeNearbyPlaces = nearbyPlaces.subscribe((places) => {
+					activeNearbyPlaces = places;
+					syncNearbyPlaceMarkers();
+				});
+				const unsubscribeSelectedSiteForNearbyPlaces = selectedSiteId.subscribe((siteId) => {
+					if (!siteId) return;
+					clearNearbyPlaces();
 				});
 				const unsubscribeProjectLayersVisible = projectLayersVisible.subscribe((visible) => {
 					isProjectLayersVisible = visible;
@@ -1059,6 +1369,11 @@
 				});
 
 				map.on('remove', () => {
+					for (const [mapLayerId, handler] of viewerLayerPopupHandlers.entries()) {
+						map.off('click', mapLayerId, handler);
+					}
+					viewerLayerPopupHandlers.clear();
+					removeViewerLayerPopup();
 					for (const marker of markerLayers.values()) {
 						marker.remove();
 					}
@@ -1067,6 +1382,10 @@
 						marker.remove();
 					}
 					routePlannerMarkers.clear();
+					for (const marker of nearbyPlaceMarkers.values()) {
+						marker.remove();
+					}
+					nearbyPlaceMarkers.clear();
 					unsubscribeActiveBasemapStyle();
 					unsubscribeSatelliteBasemapEnabled();
 					unsubscribeViewerLayers();
@@ -1077,6 +1396,8 @@
 					unsubscribeLmvInteractionGate();
 					unsubscribeSelectedSiteId?.();
 					unsubscribeSelectedSearchLocation();
+					unsubscribeNearbyPlaces();
+					unsubscribeSelectedSiteForNearbyPlaces();
 					unsubscribeRoutePlannerLocations();
 					unsubscribeRoutePlannerMapPickTargetId();
 				});
@@ -1281,5 +1602,27 @@
 		font-size: 0.65rem;
 		font-weight: 700;
 		box-shadow: 0 1px 4px rgb(0 0 0 / 35%);
+	}
+
+	:global(.place-result-marker) {
+		display: grid;
+		place-items: center;
+		width: 2rem;
+		height: 2rem;
+		border: 2px solid #ffffff;
+		border-radius: 9999px;
+		background: var(--calcite-color-brand);
+		color: #ffffff;
+		font-size: 1.25rem;
+		font-weight: 700;
+		box-shadow: 0 1px 4px rgb(0 0 0 / 35%);
+		overflow: hidden;
+	}
+
+	:global(.place-result-marker img) {
+		display: block;
+		width: 100%;
+		height: 100%;
+		object-fit: contain;
 	}
 </style>

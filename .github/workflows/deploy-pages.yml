@@ -1,0 +1,50 @@
+name: Deploy GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: viewer-app/package-lock.json
+
+      - name: Install dependencies
+        working-directory: viewer-app
+        run: npm ci
+
+      - name: Build static site
+        working-directory: viewer-app
+        env:
+          GH_PAGES: '1'
+          VITE_ARCGIS_ACCESS_TOKEN: ${{ vars.VITE_ARCGIS_ACCESS_TOKEN }}
+        run: npm run build
+
+      - name: Disable Jekyll processing
+        working-directory: viewer-app
+        run: touch build/.nojekyll
+
+      - name: Deploy to gh-pages
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          branch: gh-pages
+          folder: viewer-app/build
+          clean: true
