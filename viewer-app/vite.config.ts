@@ -6,6 +6,7 @@ import { defineConfig } from 'vitest/config';
 
 // GH_PAGES=1 → fully static build for GitHub Pages (served from the repo
 // subpath /autodesk-and-arcgis-aec-viewer/).
+declare const process: { env: Record<string, string | undefined> };
 const ghPages = !!process.env.GH_PAGES;
 
 export default defineConfig({

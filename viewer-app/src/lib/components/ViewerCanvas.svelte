@@ -61,6 +61,13 @@
 	let mapError = $state<string | null>(null);
 	let isSatelliteBasemapActive = $state(false);
 
+	// The status-message popup is transient — auto-dismiss 4s after it appears.
+	$effect(() => {
+		if (!mapError) return;
+		const timer = setTimeout(() => (mapError = null), 4000);
+		return () => clearTimeout(timer);
+	});
+
 	// MapboxDraw instance (created in onMount once the map exists).
 	let drawInstance: MapboxDraw | undefined;
 	let drawGeoJson = $state('');
