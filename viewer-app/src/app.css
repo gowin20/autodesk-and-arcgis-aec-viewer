@@ -59,6 +59,27 @@ textarea {
 	color: var(--calcite-color-text-1) !important;
 }
 
+:root .maplibregl-popup-content a,
+:root .maplibregl-popup-content a:visited {
+	color: var(--calcite-color-brand);
+}
+
+:root .maplibregl-popup-content .contextual-popup-view-item,
+:root .maplibregl-popup-content .contextual-popup-view-item:visited {
+	display: inline-block;
+	margin-top: 0.75rem;
+	padding: 0.375rem 0.75rem;
+	border-radius: 0.25rem;
+	background: var(--calcite-color-brand);
+	color: #000000;
+	font-weight: 600;
+	text-decoration: none;
+}
+
+:root .maplibregl-popup-content .contextual-popup-view-item:hover {
+	opacity: 0.8;
+}
+
 :root .maplibregl-popup-close-button {
 	color: var(--calcite-color-text-1) !important;
 }

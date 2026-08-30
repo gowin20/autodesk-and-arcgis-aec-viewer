@@ -1,4 +1,11 @@
-import { findPlacesWithinExtent, getPlaceDetails, type IFindPlacesWithinExtentResponse } from '@esri/arcgis-rest-places';
+import {
+	IconOptions,
+	findPlacesNearPoint,
+	findPlacesWithinExtent,
+	getPlaceDetails,
+	type IFindPlacesNearPointResponse,
+	type IFindPlacesWithinExtentResponse
+} from '@esri/arcgis-rest-places';
 import { ApiKeyManager } from '@esri/arcgis-rest-request';
 import type { Map as MaplibreMap } from 'maplibre-gl';
 
@@ -18,9 +25,10 @@ type PlaceQueryObject = {
 	};
 };
 
-type PlaceSearchQuery = string | string[] | PlaceQueryObject;
-type PlaceResult = IFindPlacesWithinExtentResponse['results'][number];
-type PlaceDetails = Awaited<ReturnType<typeof getPlaceDetails>>['placeDetails'];
+export type PlaceSearchQuery = string | string[] | PlaceQueryObject;
+export type PlaceResult = IFindPlacesWithinExtentResponse['results'][number];
+export type NearbyPlaceResult = IFindPlacesNearPointResponse['results'][number];
+export type PlaceDetails = Awaited<ReturnType<typeof getPlaceDetails>>['placeDetails'];
 
 const getSearchCriteria = (
 	query: PlaceSearchQuery
@@ -72,7 +80,28 @@ export const fetchPlaces = async (
 		...extent,
 		...criteria,
 		pageSize: 20,
-		icon: 'png',
+		icon: IconOptions.PNG,
+		...(authentication ? { authentication } : {})
+	});
+	return response.results;
+};
+
+export const fetchPlacesNearby = async (
+	query: PlaceSearchQuery | null | undefined,
+	center: { lng: number; lat: number },
+	radius = 750
+): Promise<NearbyPlaceResult[] | undefined> => {
+	if (!query) return undefined;
+
+	console.log('findPlacesNearPoint request:', query);
+	const criteria = getSearchCriteria(query);
+	const response = await findPlacesNearPoint({
+		x: center.lng,
+		y: center.lat,
+		...criteria,
+		radius,
+		pageSize: 20,
+		icon: IconOptions.PNG,
 		...(authentication ? { authentication } : {})
 	});
 	return response.results;
@@ -129,7 +158,8 @@ export const fetchPlaceDetails = async (placeId: string): Promise<PlaceDetails> 
 
 	const result = await getPlaceDetails({
 		placeId,
-		requestedFields: ['all'],
+		requestedFields: ['contactInfo:website', 'hours:opening', 'address:streetAddress', 'name'],
+		icon: IconOptions.PNG,
 		...(authentication ? { authentication } : {})
 	});
 	return result.placeDetails;

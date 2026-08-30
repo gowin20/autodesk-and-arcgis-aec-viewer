@@ -4,14 +4,13 @@
 	import { DEFAULT_BASEMAP_STYLE, selectedBasemapStyle } from '$lib/state/basemap-style';
 	import { selectedSiteId, siteCatalog } from '$lib/state/site-catalog';
 	import {
-		CONTEXTUAL_LAYER_GROUPS,
 		CONTEXTUAL_LAYER_OPTIONS,
 		type ContextualLayerOption
 	} from '$lib/state/contextual-layers';
 	import {
 		addContextualViewerLayer,
+		clearViewerLayers,
 		projectLayersVisible,
-		resetViewerLayers,
 		removeViewerLayer,
 		toggleViewerLayerVisibility,
 		viewerLayers,
@@ -55,13 +54,8 @@
 		);
 		return CONTEXTUAL_LAYER_OPTIONS.filter((layer) => !activeContextualLayerIds.has(layer.id));
 	};
-	const getAvailableContextualLayersForGroup = (group: string): ContextualLayerOption[] =>
-		getAvailableContextualLayers().filter((layer) => layer.group === group);
 	const getLayerIcon = (visible: boolean): string => (visible ? 'view-visible' : 'view-hide');
-	const canClearLayers = (): boolean => {
-		if (!isProjectLayersVisible) return true;
-		return !(projectLayers.length === 1 && projectLayers[0]?.kind === 'site-location');
-	};
+	const canClearLayers = (): boolean => projectLayers.length > 0;
 	const getLayerDescription = (layer: ViewerLayer): string => {
 		switch (layer.kind) {
 			case 'contextual':
@@ -69,7 +63,11 @@
 			case 'service-area':
 				return 'Service area result';
 			case 'site-location':
-				return 'Current site marker';
+				return 'Site location marker';
+			case 'site-outline':
+				return 'Site boundary';
+			case 'place-result':
+				return 'Nearby place marker';
 			case 'geocode-result':
 				return 'Geocoding result marker';
 			case 'elevation-result':
@@ -145,7 +143,7 @@
 		</div>
 	</calcite-block>
 
-	<calcite-block heading="ArcGIS data" description="Project data" open>
+	<calcite-block heading="Project data" description="Project data" open>
 		<div class="layer-controls-row">
 			<calcite-label class="layer-visibility-control" layout="inline-space-between">
 				Show project layers
@@ -164,23 +162,12 @@
 				appearance="outline"
 				disabled={getAvailableContextualLayers().length === 0}
 			>
-				Add data
+				Add ArcGIS data
 			</calcite-button>
-			<calcite-dropdown-group group-title="Data sources" selection-mode="none">
-				<calcite-dropdown-item disabled>
-					Data sourced from ArcGIS Living Atlas, ArcGIS Hub, and ArcGIS Online
+			{#each getAvailableContextualLayers() as layer}
+				<calcite-dropdown-item onclick={() => addContextualViewerLayer(layer.id)}>
+					{layer.label}
 				</calcite-dropdown-item>
-			</calcite-dropdown-group>
-			{#each CONTEXTUAL_LAYER_GROUPS as group}
-				{#if getAvailableContextualLayersForGroup(group).length > 0}
-					<calcite-dropdown-group group-title={group} selection-mode="none">
-						{#each getAvailableContextualLayersForGroup(group) as layer}
-							<calcite-dropdown-item onclick={() => addContextualViewerLayer(layer.id)}>
-								{layer.label}
-							</calcite-dropdown-item>
-						{/each}
-					</calcite-dropdown-group>
-				{/if}
 			{/each}
 		</calcite-dropdown>
 		<h4 class="layers-list-heading">Layers</h4>
@@ -220,7 +207,7 @@
 			scale="s"
 			icon-start="trash"
 			disabled={!canClearLayers()}
-			onclick={resetViewerLayers}
+			onclick={clearViewerLayers}
 		>
 			Clear all layers
 		</calcite-button>

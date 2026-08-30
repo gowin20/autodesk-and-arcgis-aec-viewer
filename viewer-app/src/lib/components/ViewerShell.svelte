@@ -5,7 +5,7 @@
 	import ViewerControls from './ViewerControls.svelte';
 
 	let leftCollapsed = $state(false);
-	let rightCollapsed = $state(true);
+	let rightCollapsed = $state(false);
 </script>
 
 <calcite-shell>
@@ -14,7 +14,7 @@
 	</div>
 
 	<calcite-shell-panel slot="panel-start" width="m" collapsed={leftCollapsed}>
-		<calcite-action-bar slot="action-bar">
+		<calcite-action-bar slot="action-bar" expand-disabled>
 			<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 			<calcite-action
 				icon={leftCollapsed ? 'chevrons-right' : 'chevrons-left'}
@@ -28,7 +28,7 @@
 	<ViewerCanvas />
 
 	<calcite-shell-panel slot="panel-end" width="m" collapsed={rightCollapsed}>
-		<calcite-action-bar slot="action-bar">
+		<calcite-action-bar slot="action-bar" expand-disabled>
 			<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 			<calcite-action
 				icon={rightCollapsed ? 'chevrons-left' : 'chevrons-right'}

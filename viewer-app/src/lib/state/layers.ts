@@ -1,12 +1,13 @@
 import type { GeoJSONSourceSpecification } from 'maplibre-gl';
 import { get, writable } from 'svelte/store';
+import type { PlaceDetails } from '$lib/arcgis/places';
 import { CONTEXTUAL_LAYER_OPTIONS } from '$lib/state/contextual-layers';
-import { selectedSiteId, siteCatalog } from '$lib/state/site-catalog';
+import { selectedSiteId, siteCatalog, type Site } from '$lib/state/site-catalog';
 
-// Default marker position (Snowdon site) until the catalog resolves a pick.
-const DEFAULT_SITE_LOCATION_COORDINATES: [number, number] = [-79.88666527, 40.022371938];
 const SERVICE_AREA_VIEWER_LAYER_ID = 'service-area-layer';
-const SITE_LOCATION_VIEWER_LAYER_ID = 'site-location-layer';
+const SITE_LOCATION_VIEWER_LAYER_ID_PREFIX = 'site-location-';
+const SITE_OUTLINE_VIEWER_LAYER_ID_PREFIX = 'site-outline-';
+const PLACE_RESULT_VIEWER_LAYER_ID_PREFIX = 'place-result-';
 const GEOCODE_RESULT_VIEWER_LAYER_ID = 'geocode-result-layer';
 const ROUTING_RESULT_VIEWER_LAYER_ID = 'routing-results-layer';
 
@@ -31,8 +32,31 @@ export interface SiteLocationViewerLayer {
 	label: string;
 	kind: 'site-location';
 	visible: boolean;
+	siteId: string;
 	longitude: number;
 	latitude: number;
+	color: string;
+}
+
+export interface SiteOutlineViewerLayer {
+	id: string;
+	label: string;
+	kind: 'site-outline';
+	visible: boolean;
+	siteId: string;
+	color: string;
+}
+
+export interface PlaceResultViewerLayer {
+	id: string;
+	label: string;
+	kind: 'place-result';
+	visible: boolean;
+	placeId: string;
+	longitude: number;
+	latitude: number;
+	iconUrl?: string;
+	details: PlaceDetails;
 }
 
 export interface GeocodeResultViewerLayer {
@@ -68,21 +92,78 @@ export type ViewerLayer =
 	| ContextualViewerLayer
 	| ServiceAreaViewerLayer
 	| SiteLocationViewerLayer
+	| SiteOutlineViewerLayer
+	| PlaceResultViewerLayer
 	| GeocodeResultViewerLayer
 	| ElevationResultViewerLayer
 	| RoutingResultViewerLayer;
 
-const createSiteLocationLayer = (coordinates: [number, number]): SiteLocationViewerLayer => ({
-	id: SITE_LOCATION_VIEWER_LAYER_ID,
-	label: 'Current site location marker',
+const getSiteLocationLayerId = (siteId: string): string => `${SITE_LOCATION_VIEWER_LAYER_ID_PREFIX}${siteId}`;
+const getSiteOutlineLayerId = (siteId: string): string => `${SITE_OUTLINE_VIEWER_LAYER_ID_PREFIX}${siteId}`;
+const getPlaceResultLayerId = (placeId: string): string => `${PLACE_RESULT_VIEWER_LAYER_ID_PREFIX}${placeId}`;
+
+const getSiteColor = (site: Pick<Site, 'lon' | 'lat'>): string => {
+	const coordinateKey = `${site.lon.toFixed(8)},${site.lat.toFixed(8)}`;
+	let hash = 2166136261;
+	for (const character of coordinateKey) {
+		hash ^= character.charCodeAt(0);
+		hash = Math.imul(hash, 16777619);
+	}
+
+	const unsignedHash = hash >>> 0;
+	const hue = unsignedHash % 360;
+	const saturation = 68 + ((unsignedHash >>> 9) % 18);
+	const lightness = 40 + ((unsignedHash >>> 17) % 12);
+	return `hsl(${hue}, ${saturation}%, ${lightness}%)`;
+};
+
+const createSiteLocationLayer = (
+	site: Pick<Site, 'id' | 'name' | 'lon' | 'lat'>
+): SiteLocationViewerLayer => ({
+	id: getSiteLocationLayerId(site.id),
+	label: site.name,
 	kind: 'site-location',
 	visible: true,
-	longitude: coordinates[0],
-	latitude: coordinates[1]
+	siteId: site.id,
+	longitude: site.lon,
+	latitude: site.lat,
+	color: getSiteColor(site)
 });
 
-export const viewerLayers = writable<ViewerLayer[]>([createSiteLocationLayer(DEFAULT_SITE_LOCATION_COORDINATES)]);
+const createSiteOutlineLayer = (
+	site: Pick<Site, 'id' | 'name' | 'lon' | 'lat'>
+): SiteOutlineViewerLayer => ({
+	id: getSiteOutlineLayerId(site.id),
+	label: `${site.name} boundary`,
+	kind: 'site-outline',
+	visible: true,
+	siteId: site.id,
+	color: getSiteColor(site)
+});
+
+export const viewerLayers = writable<ViewerLayer[]>([]);
 export const projectLayersVisible = writable(true);
+
+let hasSelectedSite = false;
+
+const syncSelectedSiteLocationLayer = () => {
+	const sites = get(siteCatalog);
+	const selectedSiteIdValue = get(selectedSiteId);
+	if (selectedSiteIdValue) {
+		hasSelectedSite = true;
+	}
+	const selectedSite = sites.find((site) => site.id === selectedSiteIdValue);
+	viewerLayers.set(
+		selectedSite
+			? [createSiteLocationLayer(selectedSite), createSiteOutlineLayer(selectedSite)]
+			: hasSelectedSite
+				? []
+				: sites.map((site) => createSiteLocationLayer(site))
+	);
+};
+
+selectedSiteId.subscribe(syncSelectedSiteLocationLayer);
+siteCatalog.subscribe(syncSelectedSiteLocationLayer);
 
 export const addContextualViewerLayer = (contextualLayerId: string) => {
 	const contextualLayer = CONTEXTUAL_LAYER_OPTIONS.find((layer) => layer.id === contextualLayerId);
@@ -161,6 +242,36 @@ export const upsertGeocodeResultViewerLayer = (location: {
 	});
 };
 
+export const addPlaceResultViewerLayer = (place: {
+	placeId: string;
+	label: string;
+	longitude: number;
+	latitude: number;
+	details: PlaceDetails;
+}) => {
+	viewerLayers.update((layers) => {
+		const nextLayer: PlaceResultViewerLayer = {
+			id: getPlaceResultLayerId(place.placeId),
+			label: place.details.name ?? place.label,
+			kind: 'place-result',
+			visible: true,
+			placeId: place.placeId,
+			longitude: place.longitude,
+			latitude: place.latitude,
+			iconUrl: place.details.icon?.url,
+			details: place.details
+		};
+		const existingLayerIndex = layers.findIndex((layer) => layer.id === nextLayer.id);
+		if (existingLayerIndex === -1) {
+			return [...layers, nextLayer];
+		}
+
+		const nextLayers = [...layers];
+		nextLayers[existingLayerIndex] = nextLayer;
+		return nextLayers;
+	});
+};
+
 export const addElevationResultViewerLayer = (result: {
 	longitude: number;
 	latitude: number;
@@ -216,11 +327,6 @@ export const removeRoutingResultViewerLayer = () => {
 	});
 };
 
-export const resetViewerLayers = () => {
-	// Marker resets to the currently selected catalog site (Snowdon by default).
-	const site = get(siteCatalog).find((s) => s.id === get(selectedSiteId));
-	viewerLayers.set([
-		createSiteLocationLayer(site ? [site.lon, site.lat] : DEFAULT_SITE_LOCATION_COORDINATES)
-	]);
-	projectLayersVisible.set(true);
+export const clearViewerLayers = () => {
+	viewerLayers.set([]);
 };
