@@ -196,7 +196,7 @@ A new timeline slider drives LMV’s phasing animation. A delivery route can be 
 
 This creates a path toward 4D logistics at geospatial scale: ask which phase is active, when materials must arrive, where staging can occur, and how the plan interacts with local traffic and terrain—all while keeping the building and the route in one view.
 
-The APS starting points are the [APS code samples](https://aps.autodesk.com/code-samples), the [phasing demo](https://aps.autodesk.com/code-samples), and Michael Beale’s [APS author page](https://aps.autodesk.com/author/michael-beale).
+The APS starting points are the [APS code samples](https://aps.autodesk.com/code-samples), the [phasing demo](https://aps.autodesk.com/code-samples), and Michael Beale’s [APS author page](https://aps.autodesk.com/author/michael-beale) and phasing extension used in this demo: [phase-lmv-extension repo](https://github.com/wallabyway/phase-lmv-extension)
 
 ## Terrain and geospatial context
 
