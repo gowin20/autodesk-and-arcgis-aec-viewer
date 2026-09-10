@@ -11,7 +11,7 @@ https://github.com/user-attachments/assets/b42dad14-bb28-4f28-ab5a-5667cd92d023
 
 Demo: https://gowen.dev/autodesk-and-arcgis-aec-viewer/
 
-Linked In: https://www.linkedin.com/feed/update/urn:li:share:7503917437298307073/
+Linked In: https://lnkd.in/p/gS-c2mfE
 
 AU Class: https://conferences.autodesk.com/flow/autodesk/au2026/sessioncatalog/page/inperson/session/1775631134042001sZ4A
 
